@@ -45,13 +45,15 @@ let matchSubTab = "upcoming"; // upcoming | live | finished
 // ─── FIREBASE HELPERS ─────────────────────────────────────────────
 async function savePrediction(matchId, home, away) {
   const uid = currentUser;
-  const ref = doc(db, "predictions", `${matchId}_${uid}`);
-  await setDoc(ref, { matchId, userId: uid, home: +home, away: +away, ts: Date.now() });
+  const mid = String(matchId); // toujours string
+  const ref = doc(db, "predictions", `${mid}_${uid}`);
+  await setDoc(ref, { matchId: mid, userId: uid, home: +home, away: +away, ts: Date.now() });
 }
 
 async function saveMatchResult(matchId, home, away) {
-  const ref = doc(db, "results", String(matchId));
-  await setDoc(ref, { matchId, home: +home, away: +away, ts: Date.now() });
+  const mid = String(matchId);
+  const ref = doc(db, "results", mid);
+  await setDoc(ref, { matchId: mid, home: +home, away: +away, ts: Date.now() });
 }
 
 function listenPredictions(cb) {
@@ -60,8 +62,9 @@ function listenPredictions(cb) {
     const data = {};
     snap.forEach(d => {
       const p = d.data();
-      if (!data[p.matchId]) data[p.matchId] = {};
-      data[p.matchId][p.userId] = { home: p.home, away: p.away };
+      const mid = String(p.matchId);
+      if (!data[mid]) data[mid] = {};
+      data[mid][p.userId] = { home: p.home, away: p.away };
     });
     cb(data);
   });
@@ -73,7 +76,7 @@ function listenResults(cb) {
     const data = {};
     snap.forEach(d => {
       const r = d.data();
-      data[r.matchId] = { home: r.home, away: r.away };
+      data[String(r.matchId)] = { home: r.home, away: r.away };
     });
     cb(data);
   });
@@ -220,7 +223,7 @@ function normalizeESPN(ev) {
     || "";
 
   return {
-    id: ev.id,
+    id: String(ev.id), // toujours string pour matcher Firestore
     group,
     utcDate: ev.date,
     status,
@@ -240,20 +243,11 @@ function normalizeESPN(ev) {
   };
 }
 
-// ─── RENDER HELPERS ───────────────────────────────────────────────
+// ─── HELPERS ──────────────────────────────────────────────────────
 function fmtDate(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" }) + " · " +
          d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-}
-
-function allPredicted(matchId) {
-  const p = predictions[matchId] || {};
-  return PROFILES.every(pr => p[pr.id] !== undefined);
-}
-
-function myPred(matchId) {
-  return predictions[matchId]?.[currentUser];
 }
 
 // ─── SCREENS ──────────────────────────────────────────────────────
@@ -275,9 +269,9 @@ function renderProfilePicker() {
 
 function renderApp(allPreds, allResults) {
   const { totals, details } = computeScores(allPreds, allResults);
-  const liveMatches = matches.filter(m => m.status === "IN_PLAY" || m.status === "PAUSED");
-  const upcomingMatches = matches.filter(m => m.status === "TIMED" || m.status === "SCHEDULED").slice(0, 20);
-  const finishedMatches = matches.filter(m => m.status === "FINISHED").slice(-20).reverse();
+  const liveMatches     = matches.filter(m => m.status === "IN_PLAY" || m.status === "PAUSED");
+  const upcomingMatches = matches.filter(m => m.status !== "IN_PLAY" && m.status !== "PAUSED" && m.status !== "FINISHED").slice(0, 30);
+  const finishedMatches = matches.filter(m => m.status === "FINISHED").slice(-30).reverse();
 
   const me = PROFILES.find(p => p.id === currentUser);
 
@@ -491,26 +485,73 @@ function teamFlag(t) {
 }
 
 function renderMatchCard(m, allPreds, allResults) {
-  const isLive     = m.status === "IN_PLAY" || m.status === "PAUSED";
-  const isFinished = m.status === "FINISHED";
-  const isTimed    = !isLive && !isFinished;
-  const locked     = matchLocked(m);
-  const result     = allResults[m.id];
-  const preds      = allPreds[m.id] || {};
-  const revealed   = pronosRevealed(m.id, preds, m);
-  const myP        = preds[currentUser];
-
-  const scoreH = (isLive || isFinished) ? m.score?.fullTime?.home : null;
-  const scoreA = (isLive || isFinished) ? m.score?.fullTime?.away : null;
-  const myPts  = isFinished && result && myP ? calcPoints(myP, result) : null;
+  const mid      = String(m.id);
+  const isLive   = m.status === "IN_PLAY" || m.status === "PAUSED";
+  const isDone   = m.status === "FINISHED";
+  const isTimed  = !isLive && !isDone;
+  const preds    = allPreds[mid] || {};
+  const result   = allResults[mid];
+  const myP      = preds[currentUser];
+  const kickoff  = new Date(m.utcDate).getTime();
+  const locked   = isLive || isDone || Date.now() >= kickoff;
+  const everyone = PROFILES.every(p => preds[p.id] !== undefined);
+  // Révèle les pronos si : tous ont joué OU match commencé/terminé OU heure passée
+  const reveal   = everyone || locked;
+  const myPts    = isDone && result && myP ? calcPoints(myP, result) : null;
 
   const homeFr   = teamFr(m.homeTeam);
   const awayFr   = teamFr(m.awayTeam);
   const homeFlag = teamFlag(m.homeTeam);
   const awayFlag = teamFlag(m.awayTeam);
+  const scoreH   = (isLive || isDone) ? (m.score?.fullTime?.home ?? "?") : null;
+  const scoreA   = (isLive || isDone) ? (m.score?.fullTime?.away ?? "?") : null;
+
+  // ── Rangée du bas ──────────────────────────────────────────
+  let bottomRow = "";
+  if (reveal) {
+    // Affiche tous les pronos
+    const ptsLabel = pts => {
+      if (pts === PTS_EXACT)  return ` <em>+3 🎯</em>`;
+      if (pts === PTS_DRAW)   return ` <em>+2 ⚖️</em>`;
+      if (pts === PTS_WINNER) return ` <em>+1 ✅</em>`;
+      if (pts === 0)          return ` <em class="zero">0</em>`;
+      return "";
+    };
+    const chips = PROFILES.map(p => {
+      const pred = preds[p.id];
+      if (!pred) return `<div class="prono-chip no-pred"><strong>${p.name}</strong> —</div>`;
+      const pts = (isDone && result) ? calcPoints(pred, result) : null;
+      const cls = pts === PTS_EXACT ? "exact" : pts === PTS_DRAW ? "draw" : pts === PTS_WINNER ? "winner" : pts === 0 && isDone ? "wrong" : "";
+      return `<div class="prono-chip ${cls}"><strong>${p.name}</strong> ${pred.home}–${pred.away}${pts !== null ? ptsLabel(pts) : ""}</div>`;
+    }).join("");
+    const ptsBadge = myPts !== null ? `<div class="pts-chip">+${myPts}pt</div>` : "";
+    bottomRow = `<div class="pronos-row">${chips}${ptsBadge}</div>`;
+  } else if (isTimed && myP !== undefined) {
+    // Mon prono + bouton modifier (pas encore tout le monde)
+    const waiting = PROFILES.filter(p => preds[p.id] === undefined).map(p => p.name);
+    bottomRow = `
+      <div class="pronos-row">
+        <div class="prono-chip me-chip">Mon prono : <strong>${myP.home}–${myP.away}</strong></div>
+        <div class="prono-chip edit-chip" data-matchid="${mid}">Modifier</div>
+      </div>
+      <div class="awaiting-row"><span class="waiting-names">En attente : ${waiting.join(", ")}</span></div>`;
+  } else if (isTimed) {
+    // Pas encore pronostiqué
+    const done = PROFILES.filter(p => preds[p.id] !== undefined).map(p => p.name);
+    bottomRow = `
+      <div class="predict-row">
+        <div class="prono-inputs">
+          <input class="score-input" type="number" min="0" max="20" placeholder="0" id="h_${mid}">
+          <span class="input-sep">–</span>
+          <input class="score-input" type="number" min="0" max="20" placeholder="0" id="a_${mid}">
+        </div>
+        <button class="prono-submit" data-matchid="${mid}">Valider ✓</button>
+      </div>
+      ${done.length ? `<div class="awaiting-row"><span class="done-names">${done.join(", ")} ✓</span><span class="waiting-names">En attente : ${PROFILES.filter(p => preds[p.id] === undefined).map(p => p.name).join(", ")}</span></div>` : ""}`;
+  }
 
   return `
-  <div class="match-card ${isLive ? "live" : ""} ${isFinished ? "finished" : ""} ${isTimed ? "upcoming" : ""}">
+  <div class="match-card ${isLive ? "live" : ""} ${isDone ? "finished" : ""} ${isTimed ? "upcoming" : ""}">
     <div class="match-top">
       <div class="team-col home">
         <span class="team-flag">${homeFlag}</span>
@@ -519,7 +560,7 @@ function renderMatchCard(m, allPreds, allResults) {
       <div class="score-box ${isTimed ? "timed" : ""}">
         ${isTimed
           ? `<span class="score-time">${fmtDate(m.utcDate)}</span>`
-          : `<span class="score-num">${scoreH ?? "?"}</span><span class="score-dash">–</span><span class="score-num">${scoreA ?? "?"}</span>`
+          : `<span class="score-num">${scoreH}</span><span class="score-dash">–</span><span class="score-num">${scoreA}</span>`
         }
       </div>
       <div class="team-col away">
@@ -529,75 +570,10 @@ function renderMatchCard(m, allPreds, allResults) {
     </div>
     <div class="match-meta">
       <div class="match-meta-info">${m.group || ""} · ${m.venue || ""}</div>
-      ${isLive     ? `<div class="live-badge"><span class="live-dot"></span> ${m.clock || "LIVE"}</div>` : ""}
-      ${isFinished ? `<div class="finished-badge">Terminé</div>` : ""}
+      ${isLive ? `<div class="live-badge"><span class="live-dot"></span> ${m.clock || "LIVE"}</div>` : ""}
+      ${isDone  ? `<div class="finished-badge">Terminé</div>` : ""}
     </div>
-
-    ${/* Avant kick-off, pas verrouillé, pas encore tous pronos : saisie */ ""}
-    ${isTimed && !locked && !revealed ? renderPredictRow(m, myP) : ""}
-
-    ${/* Avant kick-off, pas verrouillé, tous ont pronostiqué : affiche pronos */ ""}
-    ${isTimed && !locked && revealed ? renderPronosReveal(m, preds, null, null) : ""}
-
-    ${/* Avant kick-off mais verrouillé (heure passée, ESPN pas encore mis à jour) */ ""}
-    ${isTimed && locked ? `<div class="awaiting-row"><span class="waiting-names">⏱ Match imminent — pronos verrouillés</span></div>` : ""}
-
-    ${/* Live ou terminé : révèle les pronos avec points */ ""}
-    ${(isLive || isFinished) ? renderPronosReveal(m, preds, result, myPts) : ""}
-
-    ${/* À venir, pas verrouillé, pas tous pronos : affiche qui a joué */ ""}
-    ${isTimed && !locked && !revealed ? renderAwaitingRow(preds) : ""}
-  </div>`;
-}
-
-function renderPredictRow(m, myP) {
-  if (myP !== undefined) {
-    return `
-    <div class="pronos-row">
-      <div class="prono-chip me-chip">Mon prono : <strong>${myP.home}–${myP.away}</strong></div>
-      <div class="prono-chip edit-chip" data-matchid="${m.id}">Modifier</div>
-    </div>`;
-  }
-  return `
-  <div class="predict-row">
-    <div class="prono-inputs">
-      <input class="score-input" type="number" min="0" max="20" placeholder="0" id="h_${m.id}">
-      <span class="input-sep">–</span>
-      <input class="score-input" type="number" min="0" max="20" placeholder="0" id="a_${m.id}">
-    </div>
-    <button class="prono-submit" data-matchid="${m.id}">Valider ✓</button>
-  </div>`;
-}
-
-function renderAwaitingRow(preds) {
-  const waiting = PROFILES.filter(p => preds[p.id] === undefined).map(p => p.name);
-  const done = PROFILES.filter(p => preds[p.id] !== undefined).map(p => p.name);
-  if (waiting.length === 0) return "";
-  return `
-  <div class="awaiting-row">
-    ${done.length ? `<span class="done-names">${done.join(", ")} ✓</span>` : ""}
-    <span class="waiting-names">En attente : ${waiting.join(", ")}</span>
-  </div>`;
-}
-
-function renderPronosReveal(m, preds, result, myPts) {
-  const ptsLabel = (pts) => {
-    if (pts === PTS_EXACT)  return `<em>+3 🎯</em>`;
-    if (pts === PTS_DRAW)   return `<em>+2 ⚖️</em>`;
-    if (pts === PTS_WINNER) return `<em>+1 ✅</em>`;
-    if (pts === 0)          return `<em class="zero">0</em>`;
-    return "";
-  };
-  return `
-  <div class="pronos-row reveal">
-    ${PROFILES.map(p => {
-      const pred = preds[p.id];
-      if (!pred) return `<div class="prono-chip no-pred"><strong>${p.name}</strong> —</div>`;
-      const pts = result ? calcPoints(pred, result) : null;
-      const cls = pts === PTS_EXACT ? "exact" : pts === PTS_DRAW ? "draw" : pts === PTS_WINNER ? "winner" : pts === 0 ? "wrong" : "";
-      return `<div class="prono-chip ${cls}"><strong>${p.name}</strong> ${pred.home}–${pred.away}${pts !== null ? " " + ptsLabel(pts) : ""}</div>`;
-    }).join("")}
-    ${myPts !== null ? `<div class="pts-chip">+${myPts}pt</div>` : ""}
+    ${bottomRow}
   </div>`;
 }
 
