@@ -28,9 +28,7 @@ const PROFILES = [
   { id: "herve",  name: "Hervé",  initial: "H" }
 ];
 
-// Points system
-const PTS_EXACT = 3;
-const PTS_WINNER = 1;
+// Points system — défini dans la section SCORING ci-dessous
 
 // ─── INIT ─────────────────────────────────────────────────────────
 const app = initializeApp(FIREBASE_CONFIG);
@@ -82,30 +80,62 @@ function listenResults(cb) {
 }
 
 // ─── SCORING ──────────────────────────────────────────────────────
+const PTS_EXACT  = 3;
+const PTS_DRAW   = 2; // nul correct sans score exact
+const PTS_WINNER = 1; // vainqueur correct (ou nul correct déjà compté above)
+
 function calcWinner(h, a) {
   if (h > a) return "home";
   if (a > h) return "away";
   return "draw";
 }
 function calcPoints(pred, result) {
-  if (!pred || result === undefined) return 0;
+  if (!pred || result === undefined || result === null) return 0;
+  // Score exact
   if (pred.home === result.home && pred.away === result.away) return PTS_EXACT;
-  if (calcWinner(pred.home, pred.away) === calcWinner(result.home, result.away)) return PTS_WINNER;
+  const predW = calcWinner(pred.home, pred.away);
+  const resW  = calcWinner(result.home, result.away);
+  // Nul correct sans score exact
+  if (predW === "draw" && resW === "draw") return PTS_DRAW;
+  // Vainqueur correct
+  if (predW === resW) return PTS_WINNER;
   return 0;
 }
 function computeScores(allPreds, allResults) {
-  const totals = { kevin: 0, myriam: 0, herve: 0 };
-  const details = { kevin: { exact: 0, winner: 0 }, myriam: { exact: 0, winner: 0 }, herve: { exact: 0, winner: 0 } };
+  const totals  = { kevin: 0, myriam: 0, herve: 0 };
+  const details = {
+    kevin:  { exact: 0, draw: 0, winner: 0 },
+    myriam: { exact: 0, draw: 0, winner: 0 },
+    herve:  { exact: 0, draw: 0, winner: 0 }
+  };
   Object.entries(allResults).forEach(([mid, res]) => {
     PROFILES.forEach(p => {
       const pred = allPreds[mid]?.[p.id];
-      const pts = calcPoints(pred, res);
+      const pts  = calcPoints(pred, res);
       totals[p.id] += pts;
-      if (pts === PTS_EXACT) details[p.id].exact++;
+      if (pts === PTS_EXACT)  details[p.id].exact++;
+      else if (pts === PTS_DRAW)   details[p.id].draw++;
       else if (pts === PTS_WINNER) details[p.id].winner++;
     });
   });
   return { totals, details };
+}
+
+// Pronos révélés seulement si TOUS ont pronostiqué OU si match commencé/terminé
+function pronosRevealed(matchId, preds, match) {
+  const isStarted = match.status === "IN_PLAY" || match.status === "PAUSED" || match.status === "FINISHED";
+  if (isStarted) return true;
+  // Vérifie aussi si le kick-off est passé (heure de match < maintenant)
+  const kickoff = new Date(match.utcDate).getTime();
+  if (Date.now() >= kickoff) return true;
+  // Sinon : tous doivent avoir pronostiqué
+  return PROFILES.every(pr => preds[pr.id] !== undefined);
+}
+
+// Un match est verrouillé (plus de modif) si commencé ou heure passée
+function matchLocked(match) {
+  if (match.status === "IN_PLAY" || match.status === "PAUSED" || match.status === "FINISHED") return true;
+  return Date.now() >= new Date(match.utcDate).getTime();
 }
 
 // ─── ESPN API ─────────────────────────────────────────────────────
@@ -461,17 +491,18 @@ function teamFlag(t) {
 }
 
 function renderMatchCard(m, allPreds, allResults) {
-  const isLive = m.status === "IN_PLAY" || m.status === "PAUSED";
+  const isLive     = m.status === "IN_PLAY" || m.status === "PAUSED";
   const isFinished = m.status === "FINISHED";
-  const isTimed = m.status === "TIMED" || m.status === "SCHEDULED";
-  const result = allResults[m.id];
-  const preds = allPreds[m.id] || {};
-  const revealed = allPredicted(m.id) || isLive || isFinished;
-  const myP = preds[currentUser];
+  const isTimed    = !isLive && !isFinished;
+  const locked     = matchLocked(m);
+  const result     = allResults[m.id];
+  const preds      = allPreds[m.id] || {};
+  const revealed   = pronosRevealed(m.id, preds, m);
+  const myP        = preds[currentUser];
 
-  const scoreH = isFinished ? (result?.home ?? m.score?.fullTime?.home) : isLive ? m.score?.fullTime?.home : null;
-  const scoreA = isFinished ? (result?.away ?? m.score?.fullTime?.away) : isLive ? m.score?.fullTime?.away : null;
-  const myPts = isFinished && result && myP ? calcPoints(myP, result) : null;
+  const scoreH = (isLive || isFinished) ? m.score?.fullTime?.home : null;
+  const scoreA = (isLive || isFinished) ? m.score?.fullTime?.away : null;
+  const myPts  = isFinished && result && myP ? calcPoints(myP, result) : null;
 
   const homeFr   = teamFr(m.homeTeam);
   const awayFr   = teamFr(m.awayTeam);
@@ -498,14 +529,21 @@ function renderMatchCard(m, allPreds, allResults) {
     </div>
     <div class="match-meta">
       <div class="match-meta-info">${m.group || ""} · ${m.venue || ""}</div>
-      ${isLive ? `<div class="live-badge"><span class="live-dot"></span> ${m.clock || "LIVE"}</div>` : ""}
+      ${isLive     ? `<div class="live-badge"><span class="live-dot"></span> ${m.clock || "LIVE"}</div>` : ""}
       ${isFinished ? `<div class="finished-badge">Terminé</div>` : ""}
-      ${isTimed && m.espnRaw ? `<div class="debug-status">${m.espnRaw}</div>` : ""}
     </div>
 
-    ${isTimed ? renderPredictRow(m, myP) : ""}
+    ${/* Avant kick-off et pas verrouillé : saisie ou affichage mon prono */ ""}
+    ${isTimed && !locked ? renderPredictRow(m, myP) : ""}
+
+    ${/* Avant kick-off mais verrouillé (heure passée, ESPN pas encore mis à jour) */ ""}
+    ${isTimed && locked ? `<div class="awaiting-row"><span class="waiting-names">⏱ Match imminent — pronos verrouillés</span></div>` : ""}
+
+    ${/* Live ou terminé : révèle les pronos */ ""}
     ${(isLive || isFinished) && revealed ? renderPronosReveal(m, preds, result, myPts) : ""}
-    ${isTimed && !revealed ? renderAwaitingRow(preds) : ""}
+
+    ${/* À venir, pas verrouillé, pas tous pronos : affiche qui attend */ ""}
+    ${isTimed && !locked && !revealed ? renderAwaitingRow(preds) : ""}
   </div>`;
 }
 
@@ -540,16 +578,23 @@ function renderAwaitingRow(preds) {
 }
 
 function renderPronosReveal(m, preds, result, myPts) {
+  const ptsLabel = (pts) => {
+    if (pts === PTS_EXACT)  return `<em>+3 🎯</em>`;
+    if (pts === PTS_DRAW)   return `<em>+2 ⚖️</em>`;
+    if (pts === PTS_WINNER) return `<em>+1 ✅</em>`;
+    if (pts === 0)          return `<em class="zero">0</em>`;
+    return "";
+  };
   return `
   <div class="pronos-row reveal">
     ${PROFILES.map(p => {
       const pred = preds[p.id];
-      if (!pred) return `<div class="prono-chip no-pred"><span>${p.name}</span> —</div>`;
+      if (!pred) return `<div class="prono-chip no-pred"><strong>${p.name}</strong> —</div>`;
       const pts = result ? calcPoints(pred, result) : null;
-      const cls = pts === PTS_EXACT ? "exact" : pts === PTS_WINNER ? "winner" : pts === 0 ? "wrong" : "";
-      return `<div class="prono-chip ${cls}"><strong>${p.name}</strong> ${pred.home}–${pred.away}${pts !== null ? ` <em>+${pts}pt</em>` : ""}</div>`;
+      const cls = pts === PTS_EXACT ? "exact" : pts === PTS_DRAW ? "draw" : pts === PTS_WINNER ? "winner" : pts === 0 ? "wrong" : "";
+      return `<div class="prono-chip ${cls}"><strong>${p.name}</strong> ${pred.home}–${pred.away}${pts !== null ? " " + ptsLabel(pts) : ""}</div>`;
     }).join("")}
-    ${myPts !== null ? `<div class="pts-chip">+${myPts} pt${myPts > 1 ? "s" : ""}</div>` : ""}
+    ${myPts !== null ? `<div class="pts-chip">+${myPts}pt</div>` : ""}
   </div>`;
 }
 
@@ -571,8 +616,9 @@ function renderLeaderboard(totals, details, allPreds, allResults) {
         <div class="lb-info">
           <div class="lb-name">${p.name} ${isMe ? "<span class='me-tag'>moi</span>" : ""}</div>
           <div class="lb-breakdown">
-            <span>${details[p.id].exact}</span> score${details[p.id].exact > 1 ? "s" : ""} exact${details[p.id].exact > 1 ? "s" : ""} ·
-            <span>${details[p.id].winner}</span> victoire${details[p.id].winner > 1 ? "s" : ""} correcte${details[p.id].winner > 1 ? "s" : ""}
+            <span>${details[p.id].exact}</span> exact${details[p.id].exact > 1 ? "s" : ""} ·
+            <span>${details[p.id].draw}</span> nul${details[p.id].draw > 1 ? "s" : ""} ·
+            <span>${details[p.id].winner}</span> victoire${details[p.id].winner > 1 ? "s" : ""}
           </div>
         </div>
         <div class="lb-pts-block">
@@ -585,8 +631,9 @@ function renderLeaderboard(totals, details, allPreds, allResults) {
 
   <div class="rules-card">
     <div class="rules-title">Système de points</div>
-    <div class="rules-row"><div class="rules-pts exact-pts">+3</div><div>Score exact</div></div>
-    <div class="rules-row"><div class="rules-pts winner-pts">+1</div><div>Vainqueur / nul correct</div></div>
+    <div class="rules-row"><div class="rules-pts exact-pts">+3</div><div>Score exact 🎯</div></div>
+    <div class="rules-row"><div class="rules-pts draw-pts">+2</div><div>Nul correct ⚖️</div></div>
+    <div class="rules-row"><div class="rules-pts winner-pts">+1</div><div>Vainqueur correct ✅</div></div>
     <div class="rules-row"><div class="rules-pts wrong-pts">0</div><div>Mauvais résultat</div></div>
   </div>`;
 }
@@ -1080,7 +1127,11 @@ input[type=number] { -moz-appearance: textfield; }
   line-height: var(--lh);
 }
 .prono-chip strong { color: var(--ink); font-weight: 700; }
+.prono-chip.draw { border-color: #F59E0B; background: #FFFBEB; color: #B45309; }
+.prono-chip.draw strong { color: #B45309; }
 .prono-chip em { color: var(--blue); font-style: normal; margin-left: 4px; }
+.prono-chip em.zero { color: var(--ink-faint); }
+.draw-pts { color: #F59E0B; }
 .prono-chip.exact { border-color: #22C55E; background: #F0FDF4; color: #15803D; }
 .prono-chip.exact strong { color: #15803D; }
 .prono-chip.winner { border-color: var(--blue); background: #F0F5FF; color: var(--blue); }
@@ -1240,6 +1291,7 @@ input[type=number] { -moz-appearance: textfield; }
   line-height: 24px; letter-spacing: -0.02em;
 }
 .exact-pts { color: #22C55E; }
+.draw-pts { color: #F59E0B; }
 .winner-pts { color: var(--blue); }
 .wrong-pts { color: var(--ink-faint); }
 
