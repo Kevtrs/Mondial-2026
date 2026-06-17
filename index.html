@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>Mondial 26 — Pronos</title>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;900&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- Firebase SDK -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, query } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ─── CONFIG ───────────────────────────────────────────────────────
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyCZ1JmzlIiBbP1h0paP25VMyLUknh6r3bo",
+  authDomain: "mondial-2026-cef1c.firebaseapp.com",
+  projectId: "mondial-2026-cef1c",
+  storageBucket: "mondial-2026-cef1c.firebasestorage.app",
+  messagingSenderId: "1002573965747",
+  appId: "1:1002573965747:web:334e8fa73c9ee52a6d03c6"
+};
+const FOOTBALL_API_KEY = "7585468b7f104d31a14311eafac3ba86";
+const FOOTBALL_API_BASE = "https://api.football-data.org/v4";
+const WC_ID = "WC"; // World Cup competition code
+
+const PROFILES = [
+  { id: "kevin",  name: "Kevin",  initial: "K" },
+  { id: "myriam", name: "Myriam", initial: "M" },
+  { id: "herve",  name: "Hervé",  initial: "H" }
+];
+
+// Points system
+const PTS_EXACT = 3;
+const PTS_WINNER = 1;
+
+// ─── INIT ─────────────────────────────────────────────────────────
+const app = initializeApp(FIREBASE_CONFIG);
+const db  = getFirestore(app);
+
+// App state
+let currentUser = localStorage.getItem("mondial26_user") || null;
+let currentTab  = "matches";
+let matches     = [];
+let predictions = {}; // { matchId: { kevin: {h,a}, myriam: {h,a}, herve: {h,a} } }
+let scores      = {}; // { userId: totalPts }
+let matchSubTab = "upcoming"; // upcoming | live | finished
+
+// ─── FIREBASE HELPERS ─────────────────────────────────────────────
+async function savePrediction(matchId, home, away) {
+  const uid = currentUser;
+  const ref = doc(db, "predictions", `${matchId}_${uid}`);
+  await setDoc(ref, { matchId, userId: uid, home: +home, away: +away, ts: Date.now() });
+}
+
+async function saveMatchResult(matchId, home, away) {
+  const ref = doc(db, "results", String(matchId));
+  await setDoc(ref, { matchId, home: +home, away: +away, ts: Date.now() });
+}
+
+function listenPredictions(cb) {
+  const q = collection(db, "predictions");
+  return onSnapshot(q, snap => {
+    const data = {};
+    snap.forEach(d => {
+      const p = d.data();
+      if (!data[p.matchId]) data[p.matchId] = {};
+      data[p.matchId][p.userId] = { home: p.home, away: p.away };
+    });
+    cb(data);
+  });
+}
+
+function listenResults(cb) {
+  const q = collection(db, "results");
+  return onSnapshot(q, snap => {
+    const data = {};
+    snap.forEach(d => {
+      const r = d.data();
+      data[r.matchId] = { home: r.home, away: r.away };
+    });
+    cb(data);
+  });
+}
+
+// ─── SCORING ──────────────────────────────────────────────────────
+function calcWinner(h, a) {
+  if (h > a) return "home";
+  if (a > h) return "away";
+  return "draw";
+}
+function calcPoints(pred, result) {
+  if (!pred || result === undefined) return 0;
+  if (pred.home === result.home && pred.away === result.away) return PTS_EXACT;
+  if (calcWinner(pred.home, pred.away) === calcWinner(result.home, result.away)) return PTS_WINNER;
+  return 0;
+}
+function computeScores(allPreds, allResults) {
+  const totals = { kevin: 0, myriam: 0, herve: 0 };
+  const details = { kevin: { exact: 0, winner: 0 }, myriam: { exact: 0, winner: 0 }, herve: { exact: 0, winner: 0 } };
+  Object.entries(allResults).forEach(([mid, res]) => {
+    PROFILES.forEach(p => {
+      const pred = allPreds[mid]?.[p.id];
+      const pts = calcPoints(pred, res);
+      totals[p.id] += pts;
+      if (pts === PTS_EXACT) details[p.id].exact++;
+      else if (pts === PTS_WINNER) details[p.id].winner++;
+    });
+  });
+  return { totals, details };
+}
+
+// ─── FOOTBALL API ─────────────────────────────────────────────────
+async function fetchMatches() {
+  try {
+    const res = await fetch(`${FOOTBALL_API_BASE}/competitions/${WC_ID}/matches?season=2026`, {
+      headers: { "X-Auth-Token": FOOTBALL_API_KEY }
+    });
+    if (!res.ok) throw new Error("API error");
+    const data = await res.json();
+    return data.matches || [];
+  } catch(e) {
+    console.warn("API fetch failed, using cached/mock data", e);
+    return getMockMatches();
+  }
+}
+
+function getMockMatches() {
+  // First ~20 group stage matches as fallback
+  const groups = ["A","B","C","D","E","F","G","H","I","J","K","L"];
+  const teams = {
+    A: ["Canada","Maroc","Croatie","Belgique"],
+    B: ["Argentine","Islande","Pérou","Chili"],
+    C: ["États-Unis","Panama","Yémen","Nouvelle-Zélande"],
+    D: ["France","Mexique","Arabie Saoudite","Australie"],
+    E: ["Espagne","Brésil","Japon","Allemagne"],
+    F: ["Angleterre","Portugal","Sénégal","Uruguay"],
+    G: ["Pays-Bas","Colombie","Côte d'Ivoire","Tanzanie"],
+    H: ["Iran","Ghana","Slovaquie","Honduras"],
+    I: ["Turquie","Algérie","Venezuela","Équateur"],
+    J: ["Mexique","Pologne","Maroc","Arabie Saoudite"],
+    K: ["Serbie","Cameroun","Zimbabwe","Costa Rica"],
+    L: ["Chine","Afrique du Sud","Bolivie","Irak"]
+  };
+  const cities = ["New York","Los Angeles","Dallas","Miami","Chicago","Houston","Seattle","San Francisco","Vancouver","Mexico","Toronto","Guadalajara","Kansas City","Atlanta","Boston"];
+  let id = 1000;
+  const out = [];
+  let day = new Date("2026-06-11");
+  Object.entries(teams).forEach(([grp, ts]) => {
+    const pairs = [[0,1],[2,3],[0,2],[1,3],[0,3],[1,2]];
+    pairs.forEach(([i,j]) => {
+      const d = new Date(day);
+      d.setDate(d.getDate() + Math.floor(id/3) % 20);
+      const status = id < 1004 ? "FINISHED" : id < 1006 ? "IN_PLAY" : "TIMED";
+      out.push({
+        id: id++,
+        group: `Groupe ${grp}`,
+        utcDate: d.toISOString(),
+        status,
+        homeTeam: { shortName: ts[i], name: ts[i] },
+        awayTeam: { shortName: ts[j], name: ts[j] },
+        score: {
+          fullTime: status === "FINISHED" ? { home: Math.floor(Math.random()*4), away: Math.floor(Math.random()*3) }
+                  : status === "IN_PLAY" ? { home: Math.floor(Math.random()*3), away: Math.floor(Math.random()*2) }
+                  : { home: null, away: null }
+        },
+        venue: cities[Math.floor(Math.random()*cities.length)],
+        matchday: pairs.indexOf([i,j]) + 1
+      });
+    });
+  });
+  return out;
+}
+
+// ─── RENDER HELPERS ───────────────────────────────────────────────
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" }) + " · " +
+         d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function allPredicted(matchId) {
+  const p = predictions[matchId] || {};
+  return PROFILES.every(pr => p[pr.id] !== undefined);
+}
+
+function myPred(matchId) {
+  return predictions[matchId]?.[currentUser];
+}
+
+// ─── SCREENS ──────────────────────────────────────────────────────
+function renderProfilePicker() {
+  return `
+  <div class="screen-profile">
+    <div class="profile-picker-logo">MONDIAL<span>26</span></div>
+    <div class="profile-picker-sub">C'est qui ?</div>
+    <div class="profile-picker-cards">
+      ${PROFILES.map(p => `
+        <div class="profile-pick-card" data-id="${p.id}">
+          <div class="ppc-initial">${p.initial}</div>
+          <div class="ppc-name">${p.name}</div>
+        </div>
+      `).join("")}
+    </div>
+  </div>`;
+}
+
+function renderApp(allPreds, allResults) {
+  const { totals, details } = computeScores(allPreds, allResults);
+  const liveMatches = matches.filter(m => m.status === "IN_PLAY" || m.status === "PAUSED");
+  const upcomingMatches = matches.filter(m => m.status === "TIMED" || m.status === "SCHEDULED").slice(0, 20);
+  const finishedMatches = matches.filter(m => m.status === "FINISHED").slice(-20).reverse();
+
+  const me = PROFILES.find(p => p.id === currentUser);
+
+  return `
+  <!-- HEADER -->
+  <div class="header">
+    <div class="logo">MONDIAL<span>26</span></div>
+    <div class="header-right">
+      <div class="header-user" id="btn-switch-user">
+        <div class="header-avatar">${me.initial}</div>
+        <span>${me.name}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- HERO STRIP -->
+  <div class="hero-strip">
+    <div class="hero-title">Pronos</div>
+    <div class="hero-sub">Coupe du Monde<br>USA · CAN · MEX</div>
+  </div>
+
+  <!-- PROFILES SCORE BAR -->
+  <div class="score-bar">
+    ${PROFILES.map(p => {
+      const isMe = p.id === currentUser;
+      return `
+      <div class="score-bar-item ${isMe ? "me" : ""}">
+        <div class="sbi-initial ${isMe ? "active" : ""}">${p.initial}</div>
+        <div class="sbi-name">${p.name}</div>
+        <div class="sbi-pts">${totals[p.id]} <span>pts</span></div>
+      </div>`;
+    }).join("")}
+  </div>
+
+  <!-- NAV TABS -->
+  <div class="nav-tabs">
+    <div class="tab ${currentTab === "matches" ? "active" : ""}" data-tab="matches">Matchs</div>
+    <div class="tab ${currentTab === "leaderboard" ? "active" : ""}" data-tab="leaderboard">Classement</div>
+    <div class="tab ${currentTab === "mypronos" ? "active" : ""}" data-tab="mypronos">Mes pronos</div>
+  </div>
+
+  <!-- CONTENT -->
+  <div class="content">
+    ${currentTab === "matches" ? renderMatchesTab(liveMatches, upcomingMatches, finishedMatches, allPreds, allResults) : ""}
+    ${currentTab === "leaderboard" ? renderLeaderboard(totals, details, allPreds, allResults) : ""}
+    ${currentTab === "mypronos" ? renderMyPronos(allPreds, allResults) : ""}
+  </div>`;
+}
+
+function renderMatchesTab(live, upcoming, finished, allPreds, allResults) {
+  return `
+  <div class="match-subtabs">
+    <div class="subtab ${matchSubTab === "live" ? "active" : ""}" data-subtab="live">
+      ${live.length > 0 ? `<span class="live-dot"></span>` : ""} Live ${live.length > 0 ? `<span class="badge">${live.length}</span>` : ""}
+    </div>
+    <div class="subtab ${matchSubTab === "upcoming" ? "active" : ""}" data-subtab="upcoming">À venir</div>
+    <div class="subtab ${matchSubTab === "finished" ? "active" : ""}" data-subtab="finished">Terminés</div>
+  </div>
+
+  ${matchSubTab === "live" ? (live.length ? live.map(m => renderMatchCard(m, allPreds, allResults)).join("") : `<div class="empty-state">Aucun match en cours</div>`) : ""}
+  ${matchSubTab === "upcoming" ? (upcoming.length ? upcoming.map(m => renderMatchCard(m, allPreds, allResults)).join("") : `<div class="empty-state">Aucun match à venir</div>`) : ""}
+  ${matchSubTab === "finished" ? (finished.length ? finished.map(m => renderMatchCard(m, allPreds, allResults)).join("") : `<div class="empty-state">Aucun match terminé</div>`) : ""}
+  `;
+}
+
+function renderMatchCard(m, allPreds, allResults) {
+  const isLive = m.status === "IN_PLAY" || m.status === "PAUSED";
+  const isFinished = m.status === "FINISHED";
+  const isTimed = m.status === "TIMED" || m.status === "SCHEDULED";
+  const result = allResults[m.id];
+  const preds = allPreds[m.id] || {};
+  const revealed = allPredicted(m.id) || isLive || isFinished;
+  const myP = preds[currentUser];
+
+  const scoreH = isFinished ? (result?.home ?? m.score?.fullTime?.home) : isLive ? m.score?.fullTime?.home : null;
+  const scoreA = isFinished ? (result?.away ?? m.score?.fullTime?.away) : isLive ? m.score?.fullTime?.away : null;
+
+  const myPts = isFinished && result && myP ? calcPoints(myP, result) : null;
+
+  return `
+  <div class="match-card ${isLive ? "live" : ""} ${isFinished ? "finished" : ""} ${isTimed ? "upcoming" : ""}">
+    <div class="match-top">
+      <div class="team-name">${m.homeTeam.shortName || m.homeTeam.name}</div>
+      <div class="score-box ${isTimed ? "timed" : ""}">
+        ${isTimed
+          ? `<span class="score-time">${fmtDate(m.utcDate)}</span>`
+          : `<span class="score-num">${scoreH ?? "?"}</span><span class="score-dash">–</span><span class="score-num">${scoreA ?? "?"}</span>`
+        }
+      </div>
+      <div class="team-name right">${m.awayTeam.shortName || m.awayTeam.name}</div>
+    </div>
+    <div class="match-meta">
+      <div class="match-meta-info">${m.group || ""} · ${m.venue || ""}</div>
+      ${isLive ? `<div class="live-badge"><span class="live-dot"></span> LIVE</div>` : ""}
+      ${isFinished ? `<div class="finished-badge">Terminé</div>` : ""}
+    </div>
+
+    ${isTimed ? renderPredictRow(m, myP) : ""}
+    ${(isLive || isFinished) && revealed ? renderPronosReveal(m, preds, result, myPts) : ""}
+    ${isTimed && !revealed ? renderAwaitingRow(preds) : ""}
+  </div>`;
+}
+
+function renderPredictRow(m, myP) {
+  if (myP !== undefined) {
+    return `
+    <div class="pronos-row">
+      <div class="prono-chip me-chip">Mon prono : <strong>${myP.home}–${myP.away}</strong></div>
+      <div class="prono-chip edit-chip" data-matchid="${m.id}">Modifier</div>
+    </div>`;
+  }
+  return `
+  <div class="predict-row">
+    <div class="prono-inputs">
+      <input class="score-input" type="number" min="0" max="20" placeholder="0" id="h_${m.id}">
+      <span class="input-sep">–</span>
+      <input class="score-input" type="number" min="0" max="20" placeholder="0" id="a_${m.id}">
+    </div>
+    <button class="prono-submit" data-matchid="${m.id}">Valider ✓</button>
+  </div>`;
+}
+
+function renderAwaitingRow(preds) {
+  const waiting = PROFILES.filter(p => preds[p.id] === undefined).map(p => p.name);
+  const done = PROFILES.filter(p => preds[p.id] !== undefined).map(p => p.name);
+  if (waiting.length === 0) return "";
+  return `
+  <div class="awaiting-row">
+    ${done.length ? `<span class="done-names">${done.join(", ")} ✓</span>` : ""}
+    <span class="waiting-names">En attente : ${waiting.join(", ")}</span>
+  </div>`;
+}
+
+function renderPronosReveal(m, preds, result, myPts) {
+  return `
+  <div class="pronos-row reveal">
+    ${PROFILES.map(p => {
+      const pred = preds[p.id];
+      if (!pred) return `<div class="prono-chip no-pred"><span>${p.name}</span> —</div>`;
+      const pts = result ? calcPoints(pred, result) : null;
+      const cls = pts === PTS_EXACT ? "exact" : pts === PTS_WINNER ? "winner" : pts === 0 ? "wrong" : "";
+      return `<div class="prono-chip ${cls}"><strong>${p.name}</strong> ${pred.home}–${pred.away}${pts !== null ? ` <em>+${pts}pt</em>` : ""}</div>`;
+    }).join("")}
+    ${myPts !== null ? `<div class="pts-chip">+${myPts} pt${myPts > 1 ? "s" : ""}</div>` : ""}
+  </div>`;
+}
+
+function renderLeaderboard(totals, details, allPreds, allResults) {
+  const sorted = [...PROFILES].sort((a,b) => totals[b.id] - totals[a.id]);
+  const finishedCount = Object.keys(allResults).length;
+  const totalMatches = matches.length;
+
+  return `
+  <div class="lb-card">
+    <div class="lb-header">Classement général · ${finishedCount} match${finishedCount > 1 ? "s" : ""} joué${finishedCount > 1 ? "s" : ""} / ${totalMatches}</div>
+    ${sorted.map((p, i) => {
+      const rank = i + 1;
+      const isMe = p.id === currentUser;
+      return `
+      <div class="lb-row ${rank === 1 ? "first-place" : ""} ${isMe ? "is-me" : ""}">
+        <div class="lb-rank ${rank === 1 ? "top" : ""}">${rank}</div>
+        <div class="lb-avatar ${rank === 1 ? "gold" : ""}">${p.initial}</div>
+        <div class="lb-info">
+          <div class="lb-name">${p.name} ${isMe ? "<span class='me-tag'>moi</span>" : ""}</div>
+          <div class="lb-breakdown">
+            <span>${details[p.id].exact}</span> score${details[p.id].exact > 1 ? "s" : ""} exact${details[p.id].exact > 1 ? "s" : ""} ·
+            <span>${details[p.id].winner}</span> victoire${details[p.id].winner > 1 ? "s" : ""} correcte${details[p.id].winner > 1 ? "s" : ""}
+          </div>
+        </div>
+        <div class="lb-pts-block">
+          <span class="lb-pts">${totals[p.id]}</span>
+          <span class="lb-pts-label">PTS</span>
+        </div>
+      </div>`;
+    }).join("")}
+  </div>
+
+  <div class="rules-card">
+    <div class="rules-title">Système de points</div>
+    <div class="rules-row"><div class="rules-pts exact-pts">+3</div><div>Score exact</div></div>
+    <div class="rules-row"><div class="rules-pts winner-pts">+1</div><div>Vainqueur / nul correct</div></div>
+    <div class="rules-row"><div class="rules-pts wrong-pts">0</div><div>Mauvais résultat</div></div>
+  </div>`;
+}
+
+function renderMyPronos(allPreds, allResults) {
+  const myMatches = matches.filter(m => allPreds[m.id]?.[currentUser] !== undefined);
+  if (!myMatches.length) return `<div class="empty-state">Tu n'as pas encore pronostiqué</div>`;
+
+  return myMatches.map(m => {
+    const pred = allPreds[m.id][currentUser];
+    const result = allResults[m.id];
+    const pts = result ? calcPoints(pred, result) : null;
+    const isFinished = m.status === "FINISHED";
+    const cls = pts === PTS_EXACT ? "exact" : pts === PTS_WINNER ? "winner" : pts === 0 && isFinished ? "wrong" : "";
+
+    return `
+    <div class="my-prono-row ${cls}">
+      <div class="mpr-teams">${m.homeTeam.shortName} – ${m.awayTeam.shortName}</div>
+      <div class="mpr-pred">${pred.home}–${pred.away}</div>
+      ${isFinished && result ? `<div class="mpr-result">${result.home}–${result.away}</div>` : `<div class="mpr-pending">${fmtDate(m.utcDate)}</div>`}
+      ${pts !== null ? `<div class="mpr-pts ${cls}">+${pts}pt</div>` : ""}
+    </div>`;
+  }).join("");
+}
+
+// ─── MAIN ─────────────────────────────────────────────────────────
+let allPreds = {};
+let allResults = {};
+
+async function init() {
+  // Load matches from API
+  const root = document.getElementById("root");
+  root.innerHTML = `<div class="loading"><div class="loading-spinner"></div><div class="loading-text">Chargement…</div></div>`;
+
+  matches = await fetchMatches();
+
+  // Listen Firestore in real-time
+  listenPredictions(data => {
+    allPreds = data;
+    if (currentUser) renderPage();
+  });
+  listenResults(data => {
+    allResults = data;
+    if (currentUser) renderPage();
+  });
+
+  renderPage();
+}
+
+function renderPage() {
+  const root = document.getElementById("root");
+  if (!currentUser) {
+    root.innerHTML = renderProfilePicker();
+    attachProfilePickerEvents();
+  } else {
+    root.innerHTML = renderApp(allPreds, allResults);
+    attachAppEvents();
+  }
+}
+
+function attachProfilePickerEvents() {
+  document.querySelectorAll(".profile-pick-card").forEach(el => {
+    el.addEventListener("click", () => {
+      currentUser = el.dataset.id;
+      localStorage.setItem("mondial26_user", currentUser);
+      renderPage();
+    });
+  });
+}
+
+function attachAppEvents() {
+  // Tab switching
+  document.querySelectorAll(".tab[data-tab]").forEach(el => {
+    el.addEventListener("click", () => {
+      currentTab = el.dataset.tab;
+      renderPage();
+    });
+  });
+
+  // Subtab switching
+  document.querySelectorAll(".subtab[data-subtab]").forEach(el => {
+    el.addEventListener("click", () => {
+      matchSubTab = el.dataset.subtab;
+      renderPage();
+    });
+  });
+
+  // Submit prediction
+  document.querySelectorAll(".prono-submit[data-matchid]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const mid = btn.dataset.matchid;
+      const h = document.getElementById(`h_${mid}`)?.value;
+      const a = document.getElementById(`a_${mid}`)?.value;
+      if (h === "" || a === "" || h === undefined || a === undefined) {
+        showToast("Entre les deux scores !");
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "…";
+      try {
+        await savePrediction(mid, h, a);
+        showToast("Prono enregistré ✓");
+      } catch(e) {
+        showToast("Erreur — réessaie");
+        btn.disabled = false;
+        btn.textContent = "Valider ✓";
+      }
+    });
+  });
+
+  // Edit prediction
+  document.querySelectorAll(".edit-chip[data-matchid]").forEach(el => {
+    el.addEventListener("click", () => {
+      const mid = el.dataset.matchid;
+      delete allPreds[mid]?.[currentUser];
+      renderPage();
+    });
+  });
+
+  // Switch user
+  document.getElementById("btn-switch-user")?.addEventListener("click", () => {
+    currentUser = null;
+    localStorage.removeItem("mondial26_user");
+    renderPage();
+  });
+}
+
+function showToast(msg) {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.classList.add("show"), 10);
+  setTimeout(() => { t.classList.remove("show"); setTimeout(() => t.remove(), 300); }, 2500);
+}
+
+init();
+</script>
+
+<style>
+/* ─── RESET & BASE ───────────────────────────────────────── */
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+html { font-size: 16px; }
+body {
+  font-family: 'Barlow', sans-serif;
+  background: #F2F2F2;
+  color: #111;
+  min-height: 100vh;
+  -webkit-tap-highlight-color: transparent;
+}
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+input[type=number] { -moz-appearance: textfield; }
+
+/* ─── LOADING ─────────────────────────────────────────────── */
+.loading {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  height: 100vh; gap: 16px;
+}
+.loading-spinner {
+  width: 40px; height: 40px;
+  border: 3px solid #EBEBEB;
+  border-top-color: #E3001B;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-text {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 14px; letter-spacing: 3px; color: #BBB;
+  text-transform: uppercase;
+}
+
+/* ─── PROFILE PICKER ──────────────────────────────────────── */
+.screen-profile {
+  min-height: 100vh;
+  background: white;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: 8px;
+  padding: 40px 24px;
+}
+.profile-picker-logo {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 36px;
+  letter-spacing: 3px; color: #111;
+  margin-bottom: 4px;
+}
+.profile-picker-logo span { color: #E3001B; }
+.profile-picker-sub {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 13px; letter-spacing: 4px;
+  color: #BBB; text-transform: uppercase;
+  margin-bottom: 40px;
+}
+.profile-picker-cards {
+  display: flex; gap: 16px; width: 100%; max-width: 360px;
+}
+.profile-pick-card {
+  flex: 1; border: 2px solid #EBEBEB; border-radius: 16px;
+  padding: 24px 12px; text-align: center; cursor: pointer;
+  transition: border-color 0.15s, transform 0.1s;
+  background: white;
+}
+.profile-pick-card:hover { border-color: #0066FF; transform: translateY(-2px); }
+.profile-pick-card:active { transform: scale(0.97); }
+.ppc-initial {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 48px; color: #E3001B;
+  line-height: 1;
+}
+.ppc-name {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700; font-size: 14px;
+  letter-spacing: 2px; color: #555;
+  margin-top: 8px; text-transform: uppercase;
+}
+
+/* ─── HEADER ──────────────────────────────────────────────── */
+.header {
+  background: white;
+  padding: 14px 18px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 3px solid #E3001B;
+  position: sticky; top: 0; z-index: 100;
+}
+.logo {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 22px; letter-spacing: 2px;
+}
+.logo span { color: #E3001B; }
+.header-right { display: flex; align-items: center; gap: 10px; }
+.header-user {
+  display: flex; align-items: center; gap: 8px;
+  cursor: pointer; padding: 6px 10px;
+  border: 1px solid #EBEBEB; border-radius: 20px;
+  font-size: 13px; color: #555;
+  transition: border-color 0.15s;
+}
+.header-user:hover { border-color: #CCC; }
+.header-avatar {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: #0066FF; color: white;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 12px;
+}
+
+/* ─── HERO STRIP ──────────────────────────────────────────── */
+.hero-strip {
+  background: #E3001B;
+  padding: 16px 18px;
+  display: flex; align-items: baseline; gap: 14px;
+}
+.hero-title {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 48px;
+  line-height: 1; color: white; text-transform: uppercase;
+}
+.hero-sub {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 12px; color: rgba(255,255,255,0.55);
+  letter-spacing: 2px; text-transform: uppercase; line-height: 1.4;
+}
+
+/* ─── SCORE BAR ───────────────────────────────────────────── */
+.score-bar {
+  background: white;
+  display: flex; border-bottom: 1px solid #EBEBEB;
+}
+.score-bar-item {
+  flex: 1; padding: 14px 8px; text-align: center;
+  border-right: 1px solid #F5F5F5;
+}
+.score-bar-item:last-child { border-right: none; }
+.sbi-initial {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: #F0F0F0; color: #BBB;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 14px;
+  margin: 0 auto 6px;
+}
+.sbi-initial.active { background: #0066FF; color: white; }
+.sbi-name {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 11px; letter-spacing: 1px;
+  color: #AAA; text-transform: uppercase;
+}
+.score-bar-item.me .sbi-name { color: #111; }
+.sbi-pts {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 20px; color: #111;
+  line-height: 1; margin-top: 3px;
+}
+.sbi-pts span { font-size: 11px; color: #BBB; font-weight: 400; }
+
+/* ─── NAV TABS ────────────────────────────────────────────── */
+.nav-tabs {
+  background: white;
+  display: flex; border-bottom: 1px solid #EBEBEB;
+  padding: 0 18px; gap: 24px;
+  position: sticky; top: 55px; z-index: 90;
+}
+.tab {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700; font-size: 13px;
+  letter-spacing: 1.5px; text-transform: uppercase;
+  color: #BBB; padding: 13px 0;
+  border-bottom: 3px solid transparent;
+  cursor: pointer; transition: color 0.15s;
+  white-space: nowrap;
+}
+.tab.active { color: #111; border-bottom-color: #E3001B; }
+
+/* ─── CONTENT ─────────────────────────────────────────────── */
+.content { padding: 12px 16px 100px; }
+
+/* SUBTABS */
+.match-subtabs {
+  display: flex; gap: 8px; margin-bottom: 14px; margin-top: 4px;
+}
+.subtab {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700; font-size: 12px; letter-spacing: 1px;
+  text-transform: uppercase; padding: 7px 14px;
+  border-radius: 20px; border: 1.5px solid #E8E8E8;
+  color: #AAA; cursor: pointer; display: flex; align-items: center; gap: 5px;
+  transition: all 0.15s;
+}
+.subtab.active { background: #111; color: white; border-color: #111; }
+.badge {
+  background: #E3001B; color: white; border-radius: 10px;
+  padding: 1px 6px; font-size: 10px;
+}
+
+/* ─── MATCH CARD ──────────────────────────────────────────── */
+.match-card {
+  background: white; border-radius: 14px;
+  margin-bottom: 10px; overflow: hidden;
+  border: 1.5px solid #EBEBEB;
+}
+.match-card.live { border-color: #E3001B; }
+.match-top {
+  padding: 14px 14px 8px;
+  display: flex; align-items: center; gap: 8px;
+}
+.team-name {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 20px; color: #111;
+  flex: 1; line-height: 1;
+}
+.team-name.right { text-align: right; }
+.match-card.upcoming .team-name { color: #AAA; }
+
+.score-box {
+  background: #E3001B; border-radius: 8px;
+  padding: 8px 12px; display: flex; align-items: center;
+  gap: 5px; min-width: 72px; justify-content: center;
+}
+.score-box.timed {
+  background: #F5F5F5; flex-direction: column; gap: 0;
+  min-width: 100px;
+}
+.score-time { font-size: 11px; color: #999; text-align: center; letter-spacing: 0.5px; line-height: 1.4; }
+.score-num {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 26px; color: white; line-height: 1;
+}
+.score-dash { color: rgba(255,255,255,0.35); font-size: 18px; }
+
+.match-meta {
+  padding: 0 14px 10px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.match-meta-info { font-size: 11px; color: #BBB; }
+.live-badge {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 11px; font-weight: 700; letter-spacing: 2px;
+  color: #E3001B; display: flex; align-items: center; gap: 5px;
+}
+.finished-badge {
+  font-size: 10px; color: #BBB; letter-spacing: 1px; font-weight: 600;
+}
+.live-dot {
+  width: 6px; height: 6px; background: #E3001B;
+  border-radius: 50%; display: inline-block;
+  animation: blink 1s ease-in-out infinite;
+}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+
+/* PRONOS ROW */
+.pronos-row {
+  border-top: 1px solid #F5F5F5;
+  padding: 10px 14px;
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+}
+.prono-chip {
+  background: #F7F7F7; border: 1.5px solid #EBEBEB;
+  border-radius: 20px; padding: 5px 11px;
+  font-size: 11px; color: #888;
+  font-family: 'Barlow Condensed', sans-serif; letter-spacing: 0.5px;
+}
+.prono-chip strong { color: #333; }
+.prono-chip em { color: #0066FF; font-style: normal; margin-left: 3px; }
+.prono-chip.exact { border-color: #22C55E; background: #F0FDF4; color: #15803D; }
+.prono-chip.exact strong { color: #15803D; }
+.prono-chip.winner { border-color: #0066FF; background: #F0F5FF; color: #0066FF; }
+.prono-chip.winner strong { color: #0066FF; }
+.prono-chip.wrong { border-color: #FECACA; background: #FFF5F5; color: #EF4444; }
+.prono-chip.wrong strong { color: #EF4444; }
+.prono-chip.me-chip { border-color: #0066FF; background: #F0F5FF; color: #0066FF; }
+.prono-chip.edit-chip { cursor: pointer; border-style: dashed; }
+.prono-chip.no-pred { opacity: 0.4; }
+.pts-chip {
+  margin-left: auto; background: #0066FF;
+  border-radius: 20px; padding: 5px 12px;
+  font-size: 11px; font-weight: 700; color: white;
+  font-family: 'Barlow Condensed', sans-serif;
+}
+
+/* PREDICT ROW */
+.predict-row {
+  border-top: 1px solid #F5F5F5;
+  padding: 12px 14px;
+  display: flex; align-items: center; gap: 10px;
+}
+.prono-inputs { display: flex; align-items: center; gap: 8px; }
+.score-input {
+  width: 44px; height: 44px;
+  border: 2px solid #EBEBEB; border-radius: 8px;
+  text-align: center;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 22px; color: #111;
+  outline: none; background: white;
+  transition: border-color 0.15s;
+}
+.score-input:focus { border-color: #0066FF; }
+.input-sep { font-size: 18px; color: #CCC; }
+.prono-submit {
+  margin-left: auto; background: #0066FF; color: white;
+  border: none; border-radius: 8px; padding: 11px 16px;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700; font-size: 13px; letter-spacing: 1px;
+  cursor: pointer; text-transform: uppercase;
+  transition: background 0.15s;
+}
+.prono-submit:hover { background: #0052CC; }
+.prono-submit:disabled { background: #BBB; cursor: default; }
+
+/* AWAITING ROW */
+.awaiting-row {
+  border-top: 1px solid #F5F5F5;
+  padding: 10px 14px;
+  display: flex; gap: 8px; align-items: center;
+  font-size: 11px; flex-wrap: wrap;
+}
+.done-names { color: #22C55E; font-weight: 600; }
+.waiting-names { color: #BBB; font-style: italic; }
+
+/* EMPTY STATE */
+.empty-state {
+  text-align: center; padding: 60px 20px;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 14px; letter-spacing: 2px; color: #CCC; text-transform: uppercase;
+}
+
+/* ─── LEADERBOARD ─────────────────────────────────────────── */
+.lb-card {
+  background: white; border-radius: 14px;
+  border: 1.5px solid #EBEBEB; overflow: hidden;
+  margin-bottom: 12px;
+}
+.lb-header {
+  background: #E3001B; padding: 12px 16px;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 11px;
+  letter-spacing: 3px; color: white; text-transform: uppercase;
+}
+.lb-row {
+  display: flex; align-items: center;
+  padding: 14px 16px; gap: 12px;
+  border-bottom: 1px solid #F5F5F5;
+}
+.lb-row:last-child { border: none; }
+.lb-row.is-me { background: #F8FAFF; }
+.lb-rank {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 20px; color: #E0E0E0; width: 24px;
+}
+.lb-rank.top { color: #E3001B; }
+.lb-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  background: #F0F0F0; color: #BBB;
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 15px;
+}
+.lb-avatar.gold { background: #0066FF; color: white; }
+.lb-info { flex: 1; }
+.lb-name {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700; font-size: 18px; letter-spacing: 0.5px;
+}
+.me-tag {
+  background: #0066FF; color: white;
+  font-size: 9px; padding: 1px 6px; border-radius: 10px;
+  letter-spacing: 1px; vertical-align: middle; margin-left: 4px;
+}
+.lb-breakdown { font-size: 11px; color: #CCC; margin-top: 2px; }
+.lb-breakdown span { color: #E3001B; font-weight: 600; }
+.lb-pts-block { text-align: right; }
+.lb-pts {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 28px; color: #111;
+}
+.lb-pts-label {
+  font-size: 10px; color: #BBB; letter-spacing: 2px; margin-left: 2px;
+}
+
+/* RULES CARD */
+.rules-card {
+  background: white; border-radius: 14px;
+  border: 1.5px solid #EBEBEB; padding: 16px;
+}
+.rules-title {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 11px; letter-spacing: 3px; color: #BBB;
+  text-transform: uppercase; margin-bottom: 12px;
+}
+.rules-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 0; border-bottom: 1px solid #F5F5F5;
+  font-size: 13px; color: #555;
+}
+.rules-row:last-child { border: none; }
+.rules-pts {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 18px; width: 36px; text-align: center;
+}
+.exact-pts { color: #22C55E; }
+.winner-pts { color: #0066FF; }
+.wrong-pts { color: #CCC; }
+
+/* ─── MY PRONOS ───────────────────────────────────────────── */
+.my-prono-row {
+  background: white; border-radius: 10px;
+  border: 1.5px solid #EBEBEB; margin-bottom: 8px;
+  padding: 12px 14px;
+  display: flex; align-items: center; gap: 10px;
+}
+.my-prono-row.exact { border-color: #22C55E; background: #F0FDF4; }
+.my-prono-row.winner { border-color: #0066FF; background: #F0F5FF; }
+.my-prono-row.wrong { border-color: #FECACA; background: #FFF5F5; }
+.mpr-teams {
+  flex: 1; font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700; font-size: 15px; color: #333;
+}
+.mpr-pred {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 18px; color: #111;
+}
+.mpr-result {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 16px; color: #BBB;
+}
+.mpr-pending { font-size: 11px; color: #BBB; }
+.mpr-pts {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900; font-size: 16px; min-width: 30px; text-align: right;
+}
+.mpr-pts.exact { color: #22C55E; }
+.mpr-pts.winner { color: #0066FF; }
+.mpr-pts.wrong { color: #CCC; }
+
+/* ─── TOAST ───────────────────────────────────────────────── */
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+  background: #111; color: white;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 14px; letter-spacing: 1px;
+  padding: 12px 24px; border-radius: 24px;
+  opacity: 0; transition: all 0.25s;
+  z-index: 1000; white-space: nowrap;
+  pointer-events: none;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+</body>
+</html>
