@@ -533,16 +533,19 @@ function renderMatchCard(m, allPreds, allResults) {
       ${isFinished ? `<div class="finished-badge">Terminé</div>` : ""}
     </div>
 
-    ${/* Avant kick-off et pas verrouillé : saisie ou affichage mon prono */ ""}
-    ${isTimed && !locked ? renderPredictRow(m, myP) : ""}
+    ${/* Avant kick-off, pas verrouillé, pas encore tous pronos : saisie */ ""}
+    ${isTimed && !locked && !revealed ? renderPredictRow(m, myP) : ""}
+
+    ${/* Avant kick-off, pas verrouillé, tous ont pronostiqué : affiche pronos */ ""}
+    ${isTimed && !locked && revealed ? renderPronosReveal(m, preds, null, null) : ""}
 
     ${/* Avant kick-off mais verrouillé (heure passée, ESPN pas encore mis à jour) */ ""}
     ${isTimed && locked ? `<div class="awaiting-row"><span class="waiting-names">⏱ Match imminent — pronos verrouillés</span></div>` : ""}
 
-    ${/* Live ou terminé : révèle les pronos */ ""}
-    ${(isLive || isFinished) && revealed ? renderPronosReveal(m, preds, result, myPts) : ""}
+    ${/* Live ou terminé : révèle les pronos avec points */ ""}
+    ${(isLive || isFinished) ? renderPronosReveal(m, preds, result, myPts) : ""}
 
-    ${/* À venir, pas verrouillé, pas tous pronos : affiche qui attend */ ""}
+    ${/* À venir, pas verrouillé, pas tous pronos : affiche qui a joué */ ""}
     ${isTimed && !locked && !revealed ? renderAwaitingRow(preds) : ""}
   </div>`;
 }
