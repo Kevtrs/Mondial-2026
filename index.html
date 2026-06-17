@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>Mondial 26 — Pronos</title>
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;700;900&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 
 <!-- Firebase SDK -->
 <script type="module">
@@ -111,14 +111,26 @@ function computeScores(allPreds, allResults) {
 // ─── ESPN API ─────────────────────────────────────────────────────
 async function fetchMatches() {
   try {
-    // Exact same endpoint as Veher Live — returns all FIFA WC 2026 events
-    const r = await fetch(
+    // ESPN scoreboard endpoint — même que Veher Live
+    // On fetch aussi par dates pour avoir TOUS les matchs du tournoi
+    const urls = [
       "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard",
-      { signal: AbortSignal.timeout(8000) }
+      "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=20260611-20260630",
+      "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=20260701-20260719",
+    ];
+    const results = await Promise.allSettled(
+      urls.map(u => fetch(u, { signal: AbortSignal.timeout(8000) }).then(r => r.ok ? r.json() : null))
     );
-    if (!r.ok) throw new Error("ESPN " + r.status);
-    const data = await r.json();
-    const events = data.events || [];
+    // Merge & deduplicate by event id
+    const seen = new Set();
+    const events = [];
+    for (const r of results) {
+      if (r.status !== "fulfilled" || !r.value) continue;
+      for (const ev of (r.value.events || [])) {
+        if (!seen.has(ev.id)) { seen.add(ev.id); events.push(ev); }
+      }
+    }
+    if (!events.length) throw new Error("no events");
     return events.map(normalizeESPN).sort((a,b) => new Date(a.utcDate) - new Date(b.utcDate));
   } catch(e) {
     console.warn("ESPN fetch failed", e);
@@ -130,36 +142,70 @@ function normalizeESPN(ev) {
   const comp = ev.competitions?.[0];
   const home = comp?.competitors?.find(c => c.homeAway === "home");
   const away = comp?.competitors?.find(c => c.homeAway === "away");
-  const espnStatus = comp?.status?.type?.name || "STATUS_SCHEDULED";
-  const homeScore = parseInt(home?.score) || 0;
-  const awayScore = parseInt(away?.score) || 0;
 
+  // ESPN status — toutes les valeurs possibles
+  const espnStatus = comp?.status?.type?.name
+    || comp?.status?.type?.state
+    || "STATUS_SCHEDULED";
+  const stateType = comp?.status?.type?.state || ""; // "pre" | "in" | "post"
+
+  const homeScore = parseInt(home?.score) ?? 0;
+  const awayScore = parseInt(away?.score) ?? 0;
+
+  // Mapping exhaustif ESPN → statut interne
   let status = "TIMED";
-  if (espnStatus === "STATUS_FINAL" || espnStatus === "STATUS_FULL_TIME") status = "FINISHED";
-  else if (espnStatus === "STATUS_IN_PROGRESS" || espnStatus === "STATUS_HALFTIME") status = "IN_PLAY";
-  else if (espnStatus === "STATUS_HALFTIME") status = "PAUSED";
+  if (
+    espnStatus === "STATUS_FINAL" ||
+    espnStatus === "STATUS_FULL_TIME" ||
+    espnStatus === "STATUS_ABANDONED" ||
+    espnStatus === "STATUS_POSTPONED" ||
+    stateType === "post"
+  ) {
+    status = "FINISHED";
+  } else if (
+    espnStatus === "STATUS_IN_PROGRESS" ||
+    espnStatus === "STATUS_HALFTIME" ||
+    espnStatus === "STATUS_EXTRA_TIME" ||
+    espnStatus === "STATUS_PENALTY" ||
+    espnStatus === "STATUS_SHOOTOUT" ||
+    espnStatus === "STATUS_SUSPENDED" ||
+    espnStatus === "STATUS_DELAYED" ||
+    stateType === "in"
+  ) {
+    status = "IN_PLAY";
+  }
 
-  // Group from notes headline (e.g. "Group A")
-  const note = comp?.notes?.[0]?.headline || ev.name || "";
-  const grpMatch = note.match(/Group\s+([A-L])/i);
-  const group = grpMatch ? `Groupe ${grpMatch[1]}` : note;
+  // Group depuis notes ou nom de l'événement
+  const note = comp?.notes?.[0]?.headline || ev.name || ev.shortName || "";
+  const grpMatch = note.match(/Group\s+([A-Z])/i);
+  const roundMatch = note.match(/(Round of|Quarter|Semi|Final)/i);
+  const group = grpMatch
+    ? `Groupe ${grpMatch[1]}`
+    : roundMatch ? note : "";
+
+  // Ville : ESPN met parfois la ville dans venue.address.city ou venue.fullName
+  const venue = comp?.venue?.address?.city
+    || comp?.venue?.fullName
+    || comp?.venue?.address?.state
+    || "";
 
   return {
     id: ev.id,
     group,
     utcDate: ev.date,
     status,
+    espnRaw: espnStatus,
     homeTeam: {
-      name: home?.team?.displayName || "?",
+      name: home?.team?.displayName || home?.team?.name || "?",
       shortName: home?.team?.abbreviation || home?.team?.shortDisplayName || home?.team?.displayName || "?"
     },
     awayTeam: {
-      name: away?.team?.displayName || "?",
+      name: away?.team?.displayName || away?.team?.name || "?",
       shortName: away?.team?.abbreviation || away?.team?.shortDisplayName || away?.team?.displayName || "?"
     },
     score: { fullTime: { home: homeScore, away: awayScore } },
-    venue: comp?.venue?.address?.city || comp?.venue?.fullName || "",
-    clock: comp?.status?.displayClock || "",
+    venue,
+    clock: comp?.status?.displayClock || comp?.status?.detail || "",
     period: comp?.status?.period || 0
   };
 }
@@ -267,6 +313,153 @@ function renderMatchesTab(live, upcoming, finished, allPreds, allResults) {
   `;
 }
 
+// ─── COUNTRY DATA (FR names + emoji flags) ────────────────────────
+const TEAMS = {
+  // Abréviations ESPN → { fr, flag }
+  "POR": { fr: "Portugal",        flag: "🇵🇹" },
+  "COD": { fr: "RD Congo",        flag: "🇨🇩" },
+  "FRA": { fr: "France",          flag: "🇫🇷" },
+  "MAR": { fr: "Maroc",           flag: "🇲🇦" },
+  "ESP": { fr: "Espagne",         flag: "🇪🇸" },
+  "BRA": { fr: "Brésil",          flag: "🇧🇷" },
+  "ARG": { fr: "Argentine",       flag: "🇦🇷" },
+  "GER": { fr: "Allemagne",       flag: "🇩🇪" },
+  "ENG": { fr: "Angleterre",      flag: "🏴󠁧󠁢󠁥󠁮󠁧󠁿" },
+  "ITA": { fr: "Italie",          flag: "🇮🇹" },
+  "NED": { fr: "Pays-Bas",        flag: "🇳🇱" },
+  "BEL": { fr: "Belgique",        flag: "🇧🇪" },
+  "CRO": { fr: "Croatie",         flag: "🇭🇷" },
+  "URU": { fr: "Uruguay",         flag: "🇺🇾" },
+  "MEX": { fr: "Mexique",         flag: "🇲🇽" },
+  "USA": { fr: "États-Unis",      flag: "🇺🇸" },
+  "CAN": { fr: "Canada",          flag: "🇨🇦" },
+  "SEN": { fr: "Sénégal",         flag: "🇸🇳" },
+  "GHA": { fr: "Ghana",           flag: "🇬🇭" },
+  "CMR": { fr: "Cameroun",        flag: "🇨🇲" },
+  "TUN": { fr: "Tunisie",         flag: "🇹🇳" },
+  "EGY": { fr: "Égypte",          flag: "🇪🇬" },
+  "NGA": { fr: "Nigéria",         flag: "🇳🇬" },
+  "CIV": { fr: "Côte d'Ivoire",   flag: "🇨🇮" },
+  "MLI": { fr: "Mali",            flag: "🇲🇱" },
+  "JPN": { fr: "Japon",           flag: "🇯🇵" },
+  "KOR": { fr: "Corée du Sud",    flag: "🇰🇷" },
+  "IRN": { fr: "Iran",            flag: "🇮🇷" },
+  "AUS": { fr: "Australie",       flag: "🇦🇺" },
+  "SAU": { fr: "Arabie Saoudite", flag: "🇸🇦" },
+  "QAT": { fr: "Qatar",           flag: "🇶🇦" },
+  "SUI": { fr: "Suisse",          flag: "🇨🇭" },
+  "DEN": { fr: "Danemark",        flag: "🇩🇰" },
+  "SWE": { fr: "Suède",           flag: "🇸🇪" },
+  "NOR": { fr: "Norvège",         flag: "🇳🇴" },
+  "POL": { fr: "Pologne",         flag: "🇵🇱" },
+  "TUR": { fr: "Turquie",         flag: "🇹🇷" },
+  "UKR": { fr: "Ukraine",         flag: "🇺🇦" },
+  "SRB": { fr: "Serbie",          flag: "🇷🇸" },
+  "ROU": { fr: "Roumanie",        flag: "🇷🇴" },
+  "SVK": { fr: "Slovaquie",       flag: "🇸🇰" },
+  "CZE": { fr: "Tchéquie",        flag: "🇨🇿" },
+  "HUN": { fr: "Hongrie",         flag: "🇭🇺" },
+  "AUT": { fr: "Autriche",        flag: "🇦🇹" },
+  "SCO": { fr: "Écosse",          flag: "🏴󠁧󠁢󠁳󠁣󠁴󠁿" },
+  "WAL": { fr: "Pays de Galles",  flag: "🏴󠁧󠁢󠁷󠁬󠁳󠁿" },
+  "GRE": { fr: "Grèce",           flag: "🇬🇷" },
+  "PER": { fr: "Pérou",           flag: "🇵🇪" },
+  "CHI": { fr: "Chili",           flag: "🇨🇱" },
+  "COL": { fr: "Colombie",        flag: "🇨🇴" },
+  "VEN": { fr: "Venezuela",       flag: "🇻🇪" },
+  "ECU": { fr: "Équateur",        flag: "🇪🇨" },
+  "PAR": { fr: "Paraguay",        flag: "🇵🇾" },
+  "BOL": { fr: "Bolivie",         flag: "🇧🇴" },
+  "CRC": { fr: "Costa Rica",      flag: "🇨🇷" },
+  "PAN": { fr: "Panama",          flag: "🇵🇦" },
+  "HON": { fr: "Honduras",        flag: "🇭🇳" },
+  "JAM": { fr: "Jamaïque",        flag: "🇯🇲" },
+  "NZL": { fr: "Nouvelle-Zélande",flag: "🇳🇿" },
+  "ALG": { fr: "Algérie",         flag: "🇩🇿" },
+  "RSA": { fr: "Afrique du Sud",  flag: "🇿🇦" },
+  "MOR": { fr: "Maroc",           flag: "🇲🇦" },
+  "ISL": { fr: "Islande",         flag: "🇮🇸" },
+  "FIN": { fr: "Finlande",        flag: "🇫🇮" },
+  "IRQ": { fr: "Irak",            flag: "🇮🇶" },
+  "SYR": { fr: "Syrie",           flag: "🇸🇾" },
+  "LIB": { fr: "Liban",           flag: "🇱🇧" },
+  "CHN": { fr: "Chine",           flag: "🇨🇳" },
+  "IND": { fr: "Inde",            flag: "🇮🇳" },
+  "THA": { fr: "Thaïlande",       flag: "🇹🇭" },
+  "VIE": { fr: "Viêt Nam",        flag: "🇻🇳" },
+  "IDN": { fr: "Indonésie",       flag: "🇮🇩" },
+  "PHI": { fr: "Philippines",     flag: "🇵🇭" },
+  "BAN": { fr: "Bangladesh",      flag: "🇧🇩" },
+  // noms complets ESPN en fallback
+  "Portugal":          { fr: "Portugal",        flag: "🇵🇹" },
+  "Congo DR":          { fr: "RD Congo",        flag: "🇨🇩" },
+  "DR Congo":          { fr: "RD Congo",        flag: "🇨🇩" },
+  "France":            { fr: "France",          flag: "🇫🇷" },
+  "Morocco":           { fr: "Maroc",           flag: "🇲🇦" },
+  "Spain":             { fr: "Espagne",         flag: "🇪🇸" },
+  "Brazil":            { fr: "Brésil",          flag: "🇧🇷" },
+  "Argentina":         { fr: "Argentine",       flag: "🇦🇷" },
+  "Germany":           { fr: "Allemagne",       flag: "🇩🇪" },
+  "England":           { fr: "Angleterre",      flag: "🏴󠁧󠁢󠁥󠁮󠁧󠁿" },
+  "Italy":             { fr: "Italie",          flag: "🇮🇹" },
+  "Netherlands":       { fr: "Pays-Bas",        flag: "🇳🇱" },
+  "Belgium":           { fr: "Belgique",        flag: "🇧🇪" },
+  "Croatia":           { fr: "Croatie",         flag: "🇭🇷" },
+  "Uruguay":           { fr: "Uruguay",         flag: "🇺🇾" },
+  "Mexico":            { fr: "Mexique",         flag: "🇲🇽" },
+  "United States":     { fr: "États-Unis",      flag: "🇺🇸" },
+  "USA":               { fr: "États-Unis",      flag: "🇺🇸" },
+  "Canada":            { fr: "Canada",          flag: "🇨🇦" },
+  "Senegal":           { fr: "Sénégal",         flag: "🇸🇳" },
+  "Ghana":             { fr: "Ghana",           flag: "🇬🇭" },
+  "Cameroon":          { fr: "Cameroun",        flag: "🇨🇲" },
+  "Tunisia":           { fr: "Tunisie",         flag: "🇹🇳" },
+  "Egypt":             { fr: "Égypte",          flag: "🇪🇬" },
+  "Nigeria":           { fr: "Nigéria",         flag: "🇳🇬" },
+  "Ivory Coast":       { fr: "Côte d'Ivoire",   flag: "🇨🇮" },
+  "Japan":             { fr: "Japon",           flag: "🇯🇵" },
+  "South Korea":       { fr: "Corée du Sud",    flag: "🇰🇷" },
+  "Korea Republic":    { fr: "Corée du Sud",    flag: "🇰🇷" },
+  "Iran":              { fr: "Iran",            flag: "🇮🇷" },
+  "Australia":         { fr: "Australie",       flag: "🇦🇺" },
+  "Saudi Arabia":      { fr: "Arabie Saoudite", flag: "🇸🇦" },
+  "Qatar":             { fr: "Qatar",           flag: "🇶🇦" },
+  "Switzerland":       { fr: "Suisse",          flag: "🇨🇭" },
+  "Denmark":           { fr: "Danemark",        flag: "🇩🇰" },
+  "Sweden":            { fr: "Suède",           flag: "🇸🇪" },
+  "Norway":            { fr: "Norvège",         flag: "🇳🇴" },
+  "Poland":            { fr: "Pologne",         flag: "🇵🇱" },
+  "Turkey":            { fr: "Turquie",         flag: "🇹🇷" },
+  "Ukraine":           { fr: "Ukraine",         flag: "🇺🇦" },
+  "Serbia":            { fr: "Serbie",          flag: "🇷🇸" },
+  "Scotland":          { fr: "Écosse",          flag: "🏴󠁧󠁢󠁳󠁣󠁴󠁿" },
+  "Peru":              { fr: "Pérou",           flag: "🇵🇪" },
+  "Chile":             { fr: "Chili",           flag: "🇨🇱" },
+  "Colombia":          { fr: "Colombie",        flag: "🇨🇴" },
+  "Venezuela":         { fr: "Venezuela",       flag: "🇻🇪" },
+  "Ecuador":           { fr: "Équateur",        flag: "🇪🇨" },
+  "Costa Rica":        { fr: "Costa Rica",      flag: "🇨🇷" },
+  "Panama":            { fr: "Panama",          flag: "🇵🇦" },
+  "Honduras":          { fr: "Honduras",        flag: "🇭🇳" },
+  "New Zealand":       { fr: "Nouvelle-Zélande",flag: "🇳🇿" },
+  "Algeria":           { fr: "Algérie",         flag: "🇩🇿" },
+  "South Africa":      { fr: "Afrique du Sud",  flag: "🇿🇦" },
+  "Iceland":           { fr: "Islande",         flag: "🇮🇸" },
+  "Iraq":              { fr: "Irak",            flag: "🇮🇶" },
+  "China":             { fr: "Chine",           flag: "🇨🇳" },
+};
+
+function teamFr(t) {
+  const key = t.shortName || t.name || "";
+  const full = t.name || "";
+  return TEAMS[key]?.fr || TEAMS[full]?.fr || full || key;
+}
+function teamFlag(t) {
+  const key = t.shortName || t.name || "";
+  const full = t.name || "";
+  return TEAMS[key]?.flag || TEAMS[full]?.flag || "🏳️";
+}
+
 function renderMatchCard(m, allPreds, allResults) {
   const isLive = m.status === "IN_PLAY" || m.status === "PAUSED";
   const isFinished = m.status === "FINISHED";
@@ -278,25 +471,36 @@ function renderMatchCard(m, allPreds, allResults) {
 
   const scoreH = isFinished ? (result?.home ?? m.score?.fullTime?.home) : isLive ? m.score?.fullTime?.home : null;
   const scoreA = isFinished ? (result?.away ?? m.score?.fullTime?.away) : isLive ? m.score?.fullTime?.away : null;
-
   const myPts = isFinished && result && myP ? calcPoints(myP, result) : null;
+
+  const homeFr   = teamFr(m.homeTeam);
+  const awayFr   = teamFr(m.awayTeam);
+  const homeFlag = teamFlag(m.homeTeam);
+  const awayFlag = teamFlag(m.awayTeam);
 
   return `
   <div class="match-card ${isLive ? "live" : ""} ${isFinished ? "finished" : ""} ${isTimed ? "upcoming" : ""}">
     <div class="match-top">
-      <div class="team-name">${m.homeTeam.shortName || m.homeTeam.name}</div>
+      <div class="team-col home">
+        <span class="team-flag">${homeFlag}</span>
+        <span class="team-name">${homeFr}</span>
+      </div>
       <div class="score-box ${isTimed ? "timed" : ""}">
         ${isTimed
           ? `<span class="score-time">${fmtDate(m.utcDate)}</span>`
           : `<span class="score-num">${scoreH ?? "?"}</span><span class="score-dash">–</span><span class="score-num">${scoreA ?? "?"}</span>`
         }
       </div>
-      <div class="team-name right">${m.awayTeam.shortName || m.awayTeam.name}</div>
+      <div class="team-col away">
+        <span class="team-name">${awayFr}</span>
+        <span class="team-flag">${awayFlag}</span>
+      </div>
     </div>
     <div class="match-meta">
       <div class="match-meta-info">${m.group || ""} · ${m.venue || ""}</div>
-      ${isLive ? `<div class="live-badge"><span class="live-dot"></span> ${m.clock ? m.clock : "LIVE"}</div>` : ""}
+      ${isLive ? `<div class="live-badge"><span class="live-dot"></span> ${m.clock || "LIVE"}</div>` : ""}
       ${isFinished ? `<div class="finished-badge">Terminé</div>` : ""}
+      ${isTimed && m.espnRaw ? `<div class="debug-status">${m.espnRaw}</div>` : ""}
     </div>
 
     ${isTimed ? renderPredictRow(m, myP) : ""}
@@ -400,7 +604,7 @@ function renderMyPronos(allPreds, allResults) {
 
     return `
     <div class="my-prono-row ${cls}">
-      <div class="mpr-teams">${m.homeTeam.shortName} – ${m.awayTeam.shortName}</div>
+      <div class="mpr-teams">${teamFlag(m.homeTeam)} ${teamFr(m.homeTeam)} – ${teamFr(m.awayTeam)} ${teamFlag(m.awayTeam)}</div>
       <div class="mpr-pred">${pred.home}–${pred.away}</div>
       ${isFinished && result ? `<div class="mpr-result">${result.home}–${result.away}</div>` : `<div class="mpr-pending">${fmtDate(m.utcDate)}</div>`}
       ${pts !== null ? `<div class="mpr-pts ${cls}">+${pts}pt</div>` : ""}
@@ -429,14 +633,14 @@ async function init() {
     if (currentUser) renderPage();
   });
 
-  // Auto-refresh ESPN scores every 60s (for live matches)
+  // Auto-refresh ESPN : 30s si match en cours, 60s sinon
   setInterval(async () => {
     const fresh = await fetchMatches();
     if (fresh.length > 0) {
       matches = fresh;
       if (currentUser) renderPage();
     }
-  }, 60000);
+  }, 30000);
 
   renderPage();
 }
@@ -796,12 +1000,16 @@ input[type=number] { -moz-appearance: textfield; }
   grid-template-columns: 1fr auto 1fr;
   align-items: center; gap: var(--bl);
 }
+.team-col {
+  display: flex; flex-direction: column; gap: 2px;
+}
+.team-col.away { align-items: flex-end; text-align: right; }
+.team-flag { font-size: 20px; line-height: 24px; }
 .team-name {
   font-family: 'Inter', system-ui, sans-serif;
-  font-weight: 900; font-size: 18px; color: var(--ink);
-  flex: 1; line-height: var(--lh); letter-spacing: -0.01em;
+  font-weight: 700; font-size: 13px; color: var(--ink);
+  line-height: var(--lh); letter-spacing: -0.01em;
 }
-.team-name.right { text-align: right; }
 .match-card.upcoming .team-name { color: var(--ink-soft); }
 
 .score-box {
@@ -845,6 +1053,11 @@ input[type=number] { -moz-appearance: textfield; }
 .finished-badge {
   font-family: 'Space Mono', monospace;
   font-size: 10px; color: var(--ink-soft); letter-spacing: 0.1em;
+}
+.debug-status {
+  font-family: 'Space Mono', monospace;
+  font-size: 9px; color: var(--ink-faint);
+  letter-spacing: 0.05em;
 }
 .live-dot {
   width: 6px; height: 6px; background: var(--accent);
