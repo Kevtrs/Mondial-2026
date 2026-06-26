@@ -1,98 +1,162 @@
 import React from "react";
 import {
   AbsoluteFill,
+  Img,
   interpolate,
   Sequence,
   spring,
+  staticFile,
   useCurrentFrame,
   useVideoConfig,
 } from "remotion";
-import { Dice } from "./Dice";
-import { Pawn } from "./Pawn";
+import { Emblem } from "./Emblem";
 import { FadeWrapper } from "./FadeWrapper";
 
 const NAVY = "#0b1622";
 const GOLD = "#d4af37";
-const RED = "#b3392c";
 const CREAM = "#f4ead2";
 
 const fontFamily = "Helvetica, Arial, sans-serif";
 
-const LogoScene: React.FC<{ durationInFrames: number }> = ({
+const HeroScene: React.FC<{ durationInFrames: number }> = ({
   durationInFrames,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
-  const titleSpring = spring({ frame, fps, config: { damping: 12 } });
-  const titleScale = interpolate(titleSpring, [0, 1], [0.4, 1]);
-  const titleOpacity = interpolate(titleSpring, [0, 1], [0, 1]);
+  const logoSpring = spring({ frame: frame - 10, fps, config: { damping: 14 } });
+  const logoScale = interpolate(logoSpring, [0, 1], [0.5, 1]);
+  const logoOpacity = interpolate(logoSpring, [0, 1], [0, 1]);
 
-  const subtitleOpacity = interpolate(frame, [40, 60], [0, 1], {
+  const subtitleOpacity = interpolate(frame, [55, 80], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
 
+  const bgScale = interpolate(frame, [0, durationInFrames], [1, 1.08]);
+
   return (
     <FadeWrapper durationInFrames={durationInFrames}>
-      <AbsoluteFill
-        style={{
-          backgroundColor: NAVY,
-          alignItems: "center",
-          justifyContent: "center",
-          flexDirection: "column",
-        }}
-      >
-        <div
+      <AbsoluteFill style={{ backgroundColor: NAVY }}>
+        <AbsoluteFill style={{ transform: `scale(${bgScale})` }}>
+          <Img
+            src={staticFile("assets/key-art.png")}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
+        </AbsoluteFill>
+        <AbsoluteFill
           style={{
-            fontFamily,
-            fontSize: 160,
-            fontWeight: 900,
-            color: GOLD,
-            letterSpacing: 12,
-            transform: `scale(${titleScale})`,
-            opacity: titleOpacity,
-            textShadow: "0 0 60px rgba(212,175,55,0.5)",
+            background:
+              "linear-gradient(to bottom, rgba(11,22,34,0.1) 0%, rgba(11,22,34,0.85) 100%)",
+          }}
+        />
+        <AbsoluteFill
+          style={{
+            alignItems: "center",
+            justifyContent: "flex-end",
+            paddingBottom: 90,
+            flexDirection: "column",
           }}
         >
-          ELDORIA
-        </div>
-        <div
-          style={{
-            fontFamily,
-            fontSize: 36,
-            fontWeight: 600,
-            color: CREAM,
-            letterSpacing: 8,
-            marginTop: 24,
-            opacity: subtitleOpacity,
-          }}
-        >
-          LE JEU DE STRATÉGIE QUI VA DIVISER VOTRE FAMILLE
-        </div>
+          <Img
+            src={staticFile("assets/logo.png")}
+            style={{
+              width: 760,
+              opacity: logoOpacity,
+              transform: `scale(${logoScale})`,
+            }}
+          />
+          <div
+            style={{
+              fontFamily,
+              fontSize: 32,
+              fontWeight: 600,
+              color: CREAM,
+              letterSpacing: 6,
+              marginTop: 10,
+              opacity: subtitleOpacity,
+              textAlign: "center",
+            }}
+          >
+            LE JEU DE STRATÉGIE QUI VA DIVISER VOTRE FAMILLE
+          </div>
+        </AbsoluteFill>
       </AbsoluteFill>
     </FadeWrapper>
   );
 };
 
-const FeatureScene: React.FC<{
-  durationInFrames: number;
-  background: string;
-  title: string;
-  subtitle: string;
-  children: React.ReactNode;
-}> = ({ durationInFrames, background, title, subtitle, children }) => {
+const SectionTitle: React.FC<{ title: string; subtitle: string }> = ({
+  title,
+  subtitle,
+}) => {
   const frame = useCurrentFrame();
-  const textOpacity = interpolate(frame, [10, 35], [0, 1], {
+  const opacity = interpolate(frame, [10, 35], [0, 1], {
     extrapolateLeft: "clamp",
     extrapolateRight: "clamp",
   });
 
   return (
+    <div style={{ textAlign: "center", opacity }}>
+      <div style={{ fontFamily, fontSize: 64, fontWeight: 900, color: CREAM }}>
+        {title}
+      </div>
+      <div
+        style={{
+          fontFamily,
+          fontSize: 30,
+          fontWeight: 500,
+          color: GOLD,
+          marginTop: 14,
+        }}
+      >
+        {subtitle}
+      </div>
+    </div>
+  );
+};
+
+const FactionsScene: React.FC<{ durationInFrames: number }> = ({
+  durationInFrames,
+}) => (
+  <FadeWrapper durationInFrames={durationInFrames}>
+    <AbsoluteFill
+      style={{
+        backgroundColor: "#15263a",
+        alignItems: "center",
+        justifyContent: "center",
+        flexDirection: "column",
+      }}
+    >
+      <div style={{ display: "flex", gap: 50, marginBottom: 60 }}>
+        <Emblem quadrant="top-left" size={140} delay={0} />
+        <Emblem quadrant="top-right" size={140} delay={8} />
+        <Emblem quadrant="bottom-left" size={140} delay={16} />
+        <Emblem quadrant="bottom-right" size={140} delay={24} />
+      </div>
+      <SectionTitle
+        title="DE 2 À 6 JOUEURS"
+        subtitle="Choisissez votre faction. Alliances et trahisons commencent ici."
+      />
+    </AbsoluteFill>
+  </FadeWrapper>
+);
+
+const StrategyScene: React.FC<{ durationInFrames: number }> = ({
+  durationInFrames,
+}) => {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+
+  const cardSpring = spring({ frame, fps, config: { damping: 16, mass: 0.7 } });
+  const rotateY = interpolate(cardSpring, [0, 1], [90, -6]);
+  const scale = interpolate(cardSpring, [0, 1], [0.7, 1]);
+
+  return (
     <FadeWrapper durationInFrames={durationInFrames}>
       <AbsoluteFill
         style={{
-          backgroundColor: background,
+          backgroundColor: "#1c1410",
           alignItems: "center",
           justifyContent: "center",
           flexDirection: "column",
@@ -100,39 +164,84 @@ const FeatureScene: React.FC<{
       >
         <div
           style={{
-            display: "flex",
-            gap: 60,
-            alignItems: "flex-end",
-            marginBottom: 70,
+            marginBottom: 60,
+            transform: `perspective(1000px) rotateY(${rotateY}deg) scale(${scale})`,
           }}
         >
-          {children}
+          <Img
+            src={staticFile("assets/card-event.png")}
+            style={{
+              height: 480,
+              borderRadius: 18,
+              boxShadow: "0 30px 60px rgba(0,0,0,0.5)",
+            }}
+          />
         </div>
-        <div
+        <SectionTitle
+          title="ALLIANCES & TRAHISONS"
+          subtitle="Chaque carte peut faire basculer le royaume."
+        />
+      </AbsoluteFill>
+    </FadeWrapper>
+  );
+};
+
+const LifestyleScene: React.FC<{ durationInFrames: number }> = ({
+  durationInFrames,
+}) => {
+  const frame = useCurrentFrame();
+  const scale = interpolate(frame, [0, durationInFrames], [1.05, 1]);
+  const textOpacity = interpolate(frame, [15, 40], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+
+  return (
+    <FadeWrapper durationInFrames={durationInFrames}>
+      <AbsoluteFill style={{ backgroundColor: NAVY }}>
+        <AbsoluteFill style={{ transform: `scale(${scale})` }}>
+          <Img
+            src={staticFile("assets/lifestyle.png")}
+            style={{ width: "100%", height: "100%", objectFit: "cover" }}
+          />
+        </AbsoluteFill>
+        <AbsoluteFill
           style={{
-            fontFamily,
-            fontSize: 72,
-            fontWeight: 900,
-            color: CREAM,
-            opacity: textOpacity,
-            textAlign: "center",
+            background:
+              "linear-gradient(to top, rgba(11,22,34,0.92) 0%, rgba(11,22,34,0.1) 55%)",
           }}
-        >
-          {title}
-        </div>
-        <div
+        />
+        <AbsoluteFill
           style={{
-            fontFamily,
-            fontSize: 34,
-            fontWeight: 500,
-            color: GOLD,
+            alignItems: "center",
+            justifyContent: "flex-end",
+            paddingBottom: 80,
             opacity: textOpacity,
-            marginTop: 16,
-            textAlign: "center",
           }}
         >
-          {subtitle}
-        </div>
+          <div
+            style={{
+              fontFamily,
+              fontSize: 58,
+              fontWeight: 900,
+              color: CREAM,
+              textAlign: "center",
+            }}
+          >
+            ENTRE AMIS, EN FAMILLE
+          </div>
+          <div
+            style={{
+              fontFamily,
+              fontSize: 30,
+              fontWeight: 500,
+              color: GOLD,
+              marginTop: 14,
+            }}
+          >
+            45 minutes pour devenir légende.
+          </div>
+        </AbsoluteFill>
       </AbsoluteFill>
     </FadeWrapper>
   );
@@ -150,10 +259,12 @@ const BoxScene: React.FC<{ durationInFrames: number }> = ({
 
   const starsCount = Math.min(
     5,
-    Math.floor(interpolate(frame, [40, 80], [0, 5], {
-      extrapolateLeft: "clamp",
-      extrapolateRight: "clamp",
-    })),
+    Math.floor(
+      interpolate(frame, [40, 80], [0, 5], {
+        extrapolateLeft: "clamp",
+        extrapolateRight: "clamp",
+      }),
+    ),
   );
 
   return (
@@ -166,45 +277,15 @@ const BoxScene: React.FC<{ durationInFrames: number }> = ({
           flexDirection: "column",
         }}
       >
-        <div
+        <Img
+          src={staticFile("assets/box-cover.png")}
           style={{
-            width: 360,
-            height: 480,
-            background: `linear-gradient(160deg, ${RED}, #7a2118)`,
-            borderRadius: 16,
-            border: `6px solid ${GOLD}`,
+            height: 600,
             transform: `scale(${boxScale}) rotate(${boxRotation}deg)`,
             boxShadow: "0 40px 80px rgba(0,0,0,0.5)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flexDirection: "column",
           }}
-        >
-          <div
-            style={{
-              fontFamily,
-              fontSize: 54,
-              fontWeight: 900,
-              color: GOLD,
-              letterSpacing: 4,
-            }}
-          >
-            ELDORIA
-          </div>
-          <div
-            style={{
-              fontFamily,
-              fontSize: 20,
-              color: CREAM,
-              marginTop: 12,
-              letterSpacing: 2,
-            }}
-          >
-            ÉDITION COLLECTOR
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 40 }}>
+        />
+        <div style={{ display: "flex", gap: 8, marginTop: 30 }}>
           {Array.from({ length: 5 }).map((_, i) => (
             <span
               key={i}
@@ -272,58 +353,49 @@ const CtaScene: React.FC<{ durationInFrames: number }> = ({
 };
 
 export const BoardGameAd: React.FC = () => {
-  const logoDuration = 150;
-  const feature1Duration = 270;
-  const feature2Duration = 270;
-  const boxDuration = 120;
+  const heroDuration = 150;
+  const factionsDuration = 180;
+  const strategyDuration = 180;
+  const lifestyleDuration = 150;
+  const boxDuration = 150;
   const ctaDuration = 90;
+
+  let cursor = 0;
+  const heroFrom = cursor;
+  cursor += heroDuration;
+  const factionsFrom = cursor;
+  cursor += factionsDuration;
+  const strategyFrom = cursor;
+  cursor += strategyDuration;
+  const lifestyleFrom = cursor;
+  cursor += lifestyleDuration;
+  const boxFrom = cursor;
+  cursor += boxDuration;
+  const ctaFrom = cursor;
 
   return (
     <AbsoluteFill style={{ backgroundColor: NAVY }}>
-      <Sequence from={0} durationInFrames={logoDuration}>
-        <LogoScene durationInFrames={logoDuration} />
+      <Sequence from={heroFrom} durationInFrames={heroDuration}>
+        <HeroScene durationInFrames={heroDuration} />
       </Sequence>
 
-      <Sequence from={logoDuration} durationInFrames={feature1Duration}>
-        <FeatureScene
-          durationInFrames={feature1Duration}
-          background="#15263a"
-          title="DE 2 À 6 JOUEURS"
-          subtitle="Alliances, trahisons, et un seul royaume à la fin."
-        >
-          <Pawn color={GOLD} size={90} delay={5} />
-          <Pawn color={RED} size={90} delay={15} />
-          <Pawn color="#4f7942" size={90} delay={25} />
-          <Pawn color="#3a6ea5" size={90} delay={35} />
-        </FeatureScene>
+      <Sequence from={factionsFrom} durationInFrames={factionsDuration}>
+        <FactionsScene durationInFrames={factionsDuration} />
       </Sequence>
 
-      <Sequence
-        from={logoDuration + feature1Duration}
-        durationInFrames={feature2Duration}
-      >
-        <FeatureScene
-          durationInFrames={feature2Duration}
-          background="#1c1410"
-          title="45 MINUTES DE PARTIE"
-          subtitle="Le temps d'une pizza. Le temps de devenir légende."
-        >
-          <Dice value={6} size={120} color={NAVY} delay={5} />
-          <Dice value={3} size={120} color={RED} delay={18} />
-        </FeatureScene>
+      <Sequence from={strategyFrom} durationInFrames={strategyDuration}>
+        <StrategyScene durationInFrames={strategyDuration} />
       </Sequence>
 
-      <Sequence
-        from={logoDuration + feature1Duration + feature2Duration}
-        durationInFrames={boxDuration}
-      >
+      <Sequence from={lifestyleFrom} durationInFrames={lifestyleDuration}>
+        <LifestyleScene durationInFrames={lifestyleDuration} />
+      </Sequence>
+
+      <Sequence from={boxFrom} durationInFrames={boxDuration}>
         <BoxScene durationInFrames={boxDuration} />
       </Sequence>
 
-      <Sequence
-        from={logoDuration + feature1Duration + feature2Duration + boxDuration}
-        durationInFrames={ctaDuration}
-      >
+      <Sequence from={ctaFrom} durationInFrames={ctaDuration}>
         <CtaScene durationInFrames={ctaDuration} />
       </Sequence>
     </AbsoluteFill>
