@@ -17,9 +17,10 @@ export const RevealWords: React.FC<{
         const progress = spring({
           frame: frame - delay,
           fps,
-          config: { damping: 16, mass: 0.5 },
+          config: { damping: 11, mass: 0.4 },
         });
-        const translateY = interpolate(progress, [0, 1], [24, 0]);
+        const translateY = interpolate(progress, [0, 1], [36, 0]);
+        const scale = interpolate(progress, [0, 1], [1.4, 1]);
         const opacity = interpolate(progress, [0, 1], [0, 1]);
 
         return (
@@ -28,8 +29,9 @@ export const RevealWords: React.FC<{
             style={{
               ...style,
               display: "inline-block",
-              transform: `translateY(${translateY}px)`,
+              transform: `translateY(${translateY}px) scale(${scale})`,
               opacity,
+              textShadow: "0 0 24px rgba(212,175,55,0.55), 0 4px 10px rgba(0,0,0,0.6)",
             }}
           >
             {word}

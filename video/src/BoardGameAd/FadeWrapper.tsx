@@ -5,7 +5,7 @@ export const FadeWrapper: React.FC<{
   durationInFrames: number;
   fadeFrames?: number;
   children: React.ReactNode;
-}> = ({ durationInFrames, fadeFrames = 15, children }) => {
+}> = ({ durationInFrames, fadeFrames = 8, children }) => {
   const frame = useCurrentFrame();
   const opacity = interpolate(
     frame,

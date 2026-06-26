@@ -18,6 +18,7 @@ import { GoldDust } from "./GoldDust";
 import { Glow } from "./Glow";
 import { RevealWords } from "./RevealText";
 import { LightRays } from "./LightRays";
+import { CutFlash } from "./CutFlash";
 
 const NAVY = "#0b1622";
 const GOLD = "#d4af37";
@@ -88,7 +89,7 @@ const HeroScene: React.FC<{ durationInFrames: number }> = ({
           <div
             style={{
               fontFamily,
-              fontSize: 30,
+              fontSize: 32,
               fontWeight: 600,
               color: CREAM,
               letterSpacing: 5,
@@ -97,6 +98,7 @@ const HeroScene: React.FC<{ durationInFrames: number }> = ({
               textAlign: "center",
               maxWidth: 1000,
               fontStyle: "italic",
+              textShadow: "0 2px 10px rgba(0,0,0,0.7)",
             }}
           >
             LE JEU DE STRATÉGIE QUI VA DIVISER VOTRE FAMILLE
@@ -122,17 +124,25 @@ const SectionTitle: React.FC<{ title: string; subtitle: string }> = ({
       <RevealWords
         text={title}
         staggerFrames={5}
-        style={{ fontFamily, fontSize: 64, fontWeight: 700, color: CREAM }}
+        style={{
+          fontFamily,
+          fontSize: 76,
+          fontWeight: 700,
+          color: CREAM,
+          letterSpacing: 2,
+        }}
       />
       <div
         style={{
           fontFamily,
-          fontSize: 28,
-          fontWeight: 400,
+          fontSize: 30,
+          fontWeight: 600,
           fontStyle: "italic",
           color: GOLD,
-          marginTop: 16,
+          marginTop: 18,
+          letterSpacing: 0.5,
           opacity: subtitleOpacity,
+          textShadow: "0 2px 8px rgba(0,0,0,0.6)",
         }}
       >
         {subtitle}
@@ -145,7 +155,10 @@ const FactionsScene: React.FC<{ durationInFrames: number }> = ({
   durationInFrames,
 }) => {
   const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
   const drift = interpolate(frame, [0, durationInFrames], [1, 1.06]);
+  const punch = spring({ frame, fps, config: { damping: 12, mass: 0.5 } });
+  const punchScale = interpolate(punch, [0, 1], [1.18, 1]);
 
   return (
     <FadeWrapper durationInFrames={durationInFrames}>
@@ -155,7 +168,7 @@ const FactionsScene: React.FC<{ durationInFrames: number }> = ({
           alignItems: "center",
           justifyContent: "center",
           flexDirection: "column",
-          transform: `scale(${drift})`,
+          transform: `scale(${drift * punchScale})`,
         }}
       >
         <AbsoluteFill
@@ -164,6 +177,7 @@ const FactionsScene: React.FC<{ durationInFrames: number }> = ({
               "radial-gradient(circle at 50% 35%, rgba(212,175,55,0.12) 0%, rgba(0,0,0,0) 60%)",
           }}
         />
+        <CutFlash />
         <div style={{ display: "flex", gap: 50, marginBottom: 60 }}>
           <Emblem quadrant="top-left" size={140} delay={0} />
           <Emblem quadrant="top-right" size={140} delay={8} />
@@ -190,6 +204,8 @@ const StrategyScene: React.FC<{ durationInFrames: number }> = ({
   const scale = interpolate(cardSpring, [0, 1], [0.7, 1]);
   const idleRotate = Math.sin(frame / 25) * 2;
   const drift = interpolate(frame, [0, durationInFrames], [1, 1.05]);
+  const punch = spring({ frame, fps, config: { damping: 12, mass: 0.5 } });
+  const punchScale = interpolate(punch, [0, 1], [1.18, 1]);
 
   return (
     <FadeWrapper durationInFrames={durationInFrames}>
@@ -199,7 +215,7 @@ const StrategyScene: React.FC<{ durationInFrames: number }> = ({
           alignItems: "center",
           justifyContent: "center",
           flexDirection: "column",
-          transform: `scale(${drift})`,
+          transform: `scale(${drift * punchScale})`,
         }}
       >
         <AbsoluteFill
@@ -210,6 +226,7 @@ const StrategyScene: React.FC<{ durationInFrames: number }> = ({
         >
           <Glow size={700} color="rgba(178,57,40,0.35)" />
         </AbsoluteFill>
+        <CutFlash />
         <div
           style={{
             marginBottom: 60,
@@ -238,12 +255,15 @@ const LifestyleScene: React.FC<{ durationInFrames: number }> = ({
   durationInFrames,
 }) => {
   const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
   const scale = interpolate(frame, [0, durationInFrames], [1.1, 1.0]);
+  const punch = spring({ frame, fps, config: { damping: 12, mass: 0.5 } });
+  const punchScale = interpolate(punch, [0, 1], [1.15, 1]);
 
   return (
     <FadeWrapper durationInFrames={durationInFrames}>
       <AbsoluteFill style={{ backgroundColor: NAVY }}>
-        <AbsoluteFill style={{ transform: `scale(${scale})` }}>
+        <AbsoluteFill style={{ transform: `scale(${scale * punchScale})` }}>
           <Img
             src={staticFile("assets/lifestyle.png")}
             style={{ width: "100%", height: "100%", objectFit: "cover" }}
@@ -255,6 +275,7 @@ const LifestyleScene: React.FC<{ durationInFrames: number }> = ({
               "linear-gradient(to top, rgba(11,22,34,0.92) 0%, rgba(11,22,34,0.1) 55%)",
           }}
         />
+        <CutFlash />
         <AbsoluteFill
           style={{
             alignItems: "center",
@@ -265,16 +286,23 @@ const LifestyleScene: React.FC<{ durationInFrames: number }> = ({
           <RevealWords
             text="ENTRE AMIS, EN FAMILLE"
             staggerFrames={4}
-            style={{ fontFamily, fontSize: 58, fontWeight: 700, color: CREAM }}
+            style={{
+              fontFamily,
+              fontSize: 64,
+              fontWeight: 700,
+              color: CREAM,
+              letterSpacing: 1,
+            }}
           />
           <div
             style={{
               fontFamily,
-              fontSize: 28,
-              fontWeight: 400,
+              fontSize: 30,
+              fontWeight: 600,
               fontStyle: "italic",
               color: GOLD,
-              marginTop: 16,
+              marginTop: 18,
+              textShadow: "0 2px 8px rgba(0,0,0,0.6)",
               opacity: interpolate(frame, [30, 55], [0, 1], {
                 extrapolateLeft: "clamp",
                 extrapolateRight: "clamp",
@@ -323,6 +351,7 @@ const BoxScene: React.FC<{ durationInFrames: number }> = ({
         <AbsoluteFill style={{ alignItems: "center", justifyContent: "center" }}>
           <Glow size={650} color="rgba(212,175,55,0.4)" />
         </AbsoluteFill>
+        <CutFlash />
         <Img
           src={staticFile("assets/box-cover.png")}
           style={{
@@ -368,7 +397,8 @@ const CtaScene: React.FC<{ durationInFrames: number }> = ({
   const { fps } = useVideoConfig();
 
   const pulse = spring({ frame, fps, config: { damping: 200, mass: 0.3 } });
-  const scale = interpolate(pulse, [0, 1], [0.85, 1]);
+  const idlePulse = 1 + Math.sin(frame / 14) * 0.02;
+  const scale = interpolate(pulse, [0, 1], [0.85, 1]) * idlePulse;
 
   return (
     <FadeWrapper durationInFrames={durationInFrames} fadeFrames={10}>
@@ -384,15 +414,17 @@ const CtaScene: React.FC<{ durationInFrames: number }> = ({
         <AbsoluteFill style={{ alignItems: "center", justifyContent: "center" }}>
           <LightRays color="rgba(11,22,34,0.5)" />
         </AbsoluteFill>
+        <CutFlash />
         <div
           style={{
             fontFamily,
-            fontSize: 86,
+            fontSize: 94,
             fontWeight: 700,
             color: NAVY,
             letterSpacing: 3,
             transform: `scale(${scale})`,
             textAlign: "center",
+            textShadow: "0 6px 20px rgba(0,0,0,0.25)",
           }}
         >
           EN VENTE MAINTENANT
